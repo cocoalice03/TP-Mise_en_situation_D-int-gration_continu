@@ -214,7 +214,6 @@ Les ressources exactes prises en charge par Terraform seront définies lors de l
 | Stockage objet S3 local | MinIO |
 | API S3 Python | Boto3 |
 | Base de données | MySQL |
-| Accès à la BDD | SQLAlchemy |
 | Conteneurisation | Docker |
 | Orchestration locale | Docker Compose |
 | CI | GitHub Actions |
