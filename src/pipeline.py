@@ -1,6 +1,6 @@
 from pprint import pprint
-from pipeline.io import load_all_csv_from_directory
-from pipeline.process import (
+from src.loader import load_all_csv_from_directory
+from src.processing import (
     flag_high_value_transactions,
     sum_by_banque_source,
     sum_by_iban_destinataire,
@@ -8,7 +8,7 @@ from pipeline.process import (
 )
 
 
-def run_pipeline(data_dir: str = "./data_input"):
+def run_pipeline(data_dir: str = "data/raw") -> None:
     # 1. Chargement des données (I/O)
     print(f"Chargement des fichiers CSV depuis : {data_dir}")
     raw_transactions = load_all_csv_from_directory(data_dir)

@@ -1,0 +1,9 @@
+# Application
+pandas
+boto3
+SQLAlchemy
+PyMySQL
+
+# Tests & qualité
+pytest
+mypy
