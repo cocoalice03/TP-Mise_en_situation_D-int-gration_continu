@@ -5,7 +5,7 @@ import pymysql
 import pytest
 from pymysql.connections import Connection
 
-from src.database import get_connection, init_db, insert_transactions, is_file_processed
+from src.database import MissingConfigError, get_connection, init_db, insert_transactions, is_file_processed
 from src.processing import flag_high_value_transactions
 
 RAW = [
@@ -25,6 +25,8 @@ RAW = [
 def conn() -> Iterator[Connection]:
     try:
         c = get_connection()
+    except MissingConfigError:
+        pytest.skip("Variables MYSQL_* non définies")
     except pymysql.err.OperationalError:
         pytest.skip("MySQL indisponible")
     init_db(c)

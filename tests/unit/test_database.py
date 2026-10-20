@@ -38,7 +38,7 @@ def _mock_conn() -> tuple[MagicMock, MagicMock]:
 
 def test_ddl_files_exist() -> None:
     names = [p.name for p in sorted(DDL_DIR.glob("*.sql"))]
-    assert names == ["001_processed_files.sql", "002_transactions.sql"]
+    assert names == ["processed_files.sql", "transactions.sql"]
 
 
 def test_init_db_executes_each_ddl_file_then_commits() -> None:
