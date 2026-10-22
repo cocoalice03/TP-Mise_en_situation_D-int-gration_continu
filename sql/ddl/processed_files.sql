@@ -1,6 +1,6 @@
 -- Suivi des fichiers déjà traités (anti-doublon, spec 4.7).
 -- L'unicité porte sur le hash SHA-256 du contenu du fichier.
-CREATE OR REPLACE TABLE processed_files (
+CREATE TABLE IF NOT EXISTS processed_files (
     id           INT          NOT NULL AUTO_INCREMENT,
     filename     VARCHAR(255) NOT NULL,
     file_hash    CHAR(64)     NOT NULL,

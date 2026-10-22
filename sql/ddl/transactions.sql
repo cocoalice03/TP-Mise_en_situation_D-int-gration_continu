@@ -1,5 +1,5 @@
 -- Transactions traitées (résultat du traitement, avec le flag is_high_value).
-CREATE OR REPLACE TABLE transactions (
+CREATE TABLE IF NOT EXISTS transactions (
     id                   BIGINT        NOT NULL AUTO_INCREMENT,
     datetime_transaction DATETIME      NOT NULL,
     iban_origine         VARCHAR(34)   NOT NULL,
