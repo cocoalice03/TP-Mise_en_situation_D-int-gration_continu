@@ -1,7 +1,17 @@
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+import pymysql
 from pymysql.connections import Connection
+
+from src.database.connection import get_connection
+from src.database.retry_policy import (
+    DB_RETRY_ON,
+    DUPLICATE_ENTRY_CODE,
+    is_retryable_db_error,
+)
+from src.retry import call_with_retry
 
 SELECT_PROCESSED_FILE = "SELECT 1 FROM processed_files WHERE file_hash = %s"
 
@@ -64,3 +74,46 @@ def insert_transactions(
         conn.rollback()
         raise
     return len(rows)
+
+
+def insert_transactions_with_retry(
+    transactions: list[dict[str, Any]],
+    filename: str,
+    file_hash: str,
+    connect: Callable[[], Connection] | None = None,
+) -> int | None:
+    """`insert_transactions` avec retry, sans jamais créer de doublon.
+
+    Chaque tentative utilise une connexion neuve. Après un échec, la tentative
+    suivante vérifie d'abord si le fichier est déjà enregistré : le cas où le
+    commit a réussi mais où la réponse s'est perdue ne réinsère donc rien.
+    Un doublon de hash (IntegrityError 1062) signifie "déjà traité" : ce n'est
+    ni retenté ni remonté comme erreur. Retourne None dans ce cas.
+    """
+    open_connection = connect or get_connection
+    failed_before = False
+
+    def attempt() -> int | None:
+        nonlocal failed_before
+        try:
+            conn = open_connection()
+            try:
+                if failed_before and is_file_processed(conn, file_hash):
+                    return len(transactions)
+                return insert_transactions(conn, transactions, filename, file_hash)
+            finally:
+                conn.close()
+        except pymysql.err.IntegrityError as error:
+            if error.args and error.args[0] == DUPLICATE_ENTRY_CODE:
+                return None
+            raise
+        except Exception:
+            failed_before = True
+            raise
+
+    return call_with_retry(
+        attempt,
+        operation=f"insertion MySQL de {filename}",
+        retry_on=DB_RETRY_ON,
+        is_retryable=is_retryable_db_error,
+    )

@@ -2,11 +2,19 @@ from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
 
+import pymysql
 import pytest
 
-from src.database import init_db, insert_transactions, is_file_processed
+from src.database import (
+    init_db,
+    insert_transactions,
+    insert_transactions_with_retry,
+    is_file_processed,
+    is_retryable_db_error,
+)
 from src.database.connection import DDL_DIR
 from src.processing import flag_high_value_transactions
+from src.retry import RetryExhaustedError
 
 RAW = [
     {
@@ -88,3 +96,105 @@ def test_is_file_processed(row: Any, expected: bool) -> None:
     cursor.fetchone.return_value = row
     assert is_file_processed(conn, "h1") is expected
     assert cursor.execute.call_args.args[1] == ("h1",)
+
+
+# --- Retry de l'insertion (spec 4.8) ---------------------------------------
+
+
+def _connections(*conns: MagicMock) -> Any:
+    """Fabrique `connect()` qui renvoie les connexions données, dans l'ordre."""
+    it = iter(conns)
+    return lambda: next(it)
+
+
+def _conn_with(fetchone: Any = None) -> MagicMock:
+    conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = fetchone
+    return conn
+
+
+def test_retry_insert_succeeds_after_transient_failure() -> None:
+    flagged = flag_high_value_transactions(RAW)
+    bad = _conn_with()
+    bad.cursor.return_value.__enter__.return_value.executemany.side_effect = (
+        pymysql.err.OperationalError(2013, "Lost connection")
+    )
+    good = _conn_with(fetchone=None)  # fichier pas encore enregistré
+
+    n = insert_transactions_with_retry(flagged, "a.csv", "h1", _connections(bad, good))
+
+    assert n == 2
+    bad.rollback.assert_called_once()
+    good.commit.assert_called()
+    bad.close.assert_called_once()
+    good.close.assert_called_once()
+
+
+def test_retry_does_not_reinsert_when_previous_attempt_actually_committed() -> None:
+    """Commit réussi mais réponse perdue : la tentative suivante ne réinsère rien."""
+    flagged = flag_high_value_transactions(RAW)
+    lost_ack = _conn_with()
+    lost_ack.commit.side_effect = pymysql.err.OperationalError(2013, "Lost connection")
+    second = _conn_with(fetchone=(1,))  # le fichier est déjà enregistré
+
+    n = insert_transactions_with_retry(flagged, "a.csv", "h1", _connections(lost_ack, second))
+
+    assert n == 2
+    second.cursor.return_value.__enter__.return_value.executemany.assert_not_called()
+
+
+def test_retry_insert_exhausted_raises_explicit_error() -> None:
+    flagged = flag_high_value_transactions(RAW)
+
+    def connect() -> MagicMock:
+        raise pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+
+    with pytest.raises(RetryExhaustedError, match="insertion MySQL de a.csv"):
+        insert_transactions_with_retry(flagged, "a.csv", "h1", connect)
+
+
+def test_retry_insert_duplicate_hash_means_already_processed() -> None:
+    flagged = flag_high_value_transactions(RAW)
+    conn = _conn_with()
+    conn.cursor.return_value.__enter__.return_value.execute.side_effect = (
+        pymysql.err.IntegrityError(1062, "Duplicate entry")
+    )
+    calls = 0
+
+    def connect() -> MagicMock:
+        nonlocal calls
+        calls += 1
+        return conn
+
+    assert insert_transactions_with_retry(flagged, "a.csv", "h1", connect) is None
+    assert calls == 1  # pas de nouvelle tentative
+
+
+def test_retry_insert_permanent_error_is_not_retried() -> None:
+    flagged = flag_high_value_transactions(RAW)
+    calls = 0
+
+    def connect() -> MagicMock:
+        nonlocal calls
+        calls += 1
+        raise pymysql.err.OperationalError(1045, "Access denied")
+
+    with pytest.raises(pymysql.err.OperationalError):
+        insert_transactions_with_retry(flagged, "a.csv", "h1", connect)
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (pymysql.err.OperationalError(2003, "x"), True),
+        (pymysql.err.OperationalError(2013, "x"), True),
+        (pymysql.err.OperationalError(1213, "deadlock"), True),
+        (pymysql.err.OperationalError(1205, "lock wait"), True),
+        (pymysql.err.InterfaceError(0, "x"), True),
+        (pymysql.err.OperationalError(1045, "access denied"), False),
+        (pymysql.err.OperationalError(1049, "unknown database"), False),
+    ],
+)
+def test_is_retryable_db_error(error: Exception, expected: bool) -> None:
+    assert is_retryable_db_error(error) is expected

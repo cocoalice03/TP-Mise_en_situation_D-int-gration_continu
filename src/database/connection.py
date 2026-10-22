@@ -1,26 +1,13 @@
 import os
-from pathlib import Path
 
 import pymysql
-from dotenv import load_dotenv
 from pymysql.connections import Connection
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
+from src.config import ROOT_DIR, MissingConfigError, load_env, required_env
+
+__all__ = ["ROOT_DIR", "DDL_DIR", "MissingConfigError", "get_connection", "init_db"]
+
 DDL_DIR = ROOT_DIR / "sql" / "ddl"
-
-
-class MissingConfigError(RuntimeError):
-    """Une variable d'environnement obligatoire n'est pas définie."""
-
-
-def _required_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise MissingConfigError(
-            f"Variable d'environnement {name} manquante "
-            "(à définir dans le fichier .env en local, ou dans les secrets/variables GitHub en CI)."
-        )
-    return value
 
 
 def get_connection() -> Connection:
@@ -31,13 +18,13 @@ def get_connection() -> Connection:
     En local ils viennent du fichier `.env` (ignoré par git) ; en CI, des
     secrets/variables GitHub. Une variable déjà définie n'est pas écrasée.
     """
-    load_dotenv(ROOT_DIR / ".env", override=False)
+    load_env()
     return pymysql.connect(
         host=os.environ.get("MYSQL_HOST", "localhost"),
         port=int(os.environ.get("MYSQL_PORT", "3306")),
-        user=_required_env("MYSQL_USER"),
-        password=_required_env("MYSQL_PASSWORD"),
-        database=_required_env("MYSQL_DATABASE"),
+        user=required_env("MYSQL_USER"),
+        password=required_env("MYSQL_PASSWORD"),
+        database=required_env("MYSQL_DATABASE"),
         charset="utf8mb4",
         autocommit=False,
     )

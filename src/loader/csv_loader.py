@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import io
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
@@ -13,6 +14,12 @@ def load_csv_file(file_path: Union[str, Path]) -> List[Dict[str, Any]]:
     with open(path, mode="r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         return [dict(row) for row in reader]
+
+
+def parse_csv_bytes(data: bytes) -> List[Dict[str, Any]]:
+    """Transforme le contenu d'un CSV (ex. lu dans MinIO) en liste de dictionnaires."""
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8"), newline=""))
+    return [dict(row) for row in reader]
 
 
 def load_all_csv_from_directory(
@@ -40,6 +47,11 @@ def list_csv_files(
     return sorted(folder.glob(pattern))
 
 
+def compute_bytes_hash(data: bytes) -> str:
+    """Hash SHA-256 d'un contenu."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def compute_file_hash(file_path: Union[str, Path]) -> str:
     """Hash SHA-256 du contenu d'un fichier."""
-    return hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
+    return compute_bytes_hash(Path(file_path).read_bytes())

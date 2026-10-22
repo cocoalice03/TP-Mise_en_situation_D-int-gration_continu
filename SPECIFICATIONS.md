@@ -79,6 +79,23 @@ Les données récupérées doivent être contrôlées avant leur traitement et l
 
 Les règles de validation seront précisées et implémentées progressivement. Une donnée invalide doit produire une erreur explicite et empêcher l'insertion de données incorrectes.
 
+Règles implémentées (`src/validation/`, fonctions pures sans accès fichier, MinIO ni MySQL) :
+
+- le fichier contient au moins une transaction et exactement les 7 colonnes attendues (ni manquante, ni en trop) ;
+- aucune valeur manquante ou vide ;
+- `datetime_transaction` au format `AAAA-MM-JJ HH:MM:SS`, date existante ;
+- `pays_source` et `pays_destinataire` : 2 lettres majuscules ;
+- `iban_origine` et `iban_destinataire` : 2 lettres majuscules, 2 chiffres, puis 11 à 30 caractères alphanumériques ; le préfixe de l'IBAN doit correspondre au pays associé ;
+- `banque_source` : 100 caractères maximum ;
+- `montant` : nombre fini **strictement positif**, 2 décimales maximum, ne dépassant pas la capacité de la colonne `DECIMAL(12,2)`. Un montant négatif ou nul est donc invalide. Le générateur injecte volontairement un montant négatif (-50.00) dans chaque fichier : le résultat final de la pipeline montre ainsi que la validation est bien exécutée.
+
+Comportement en cas d'erreur :
+
+- **Rejet par ligne** : une ligne invalide est rejetée seule, avec toutes ses erreurs. Elle n'est ni traitée ni insérée. Les lignes valides du même fichier sont traitées et insérées, et `rows_count` dans `processed_files` ne compte que les lignes insérées.
+- **Fichier inexploitable** : un fichier illisible (pas de l'UTF-8 ou pas un CSV), vide ou dont l'en-tête est incorrect n'est ni traité, ni inséré, ni marqué comme traité. La pipeline s'arrête alors avec un message `ERREUR` et le code de sortie 1.
+- **Fichier sans aucune ligne valide** : il n'est pas inséré ni marqué comme traité, et la pipeline continue avec les autres fichiers.
+- **Rapport final** : la pipeline affiche un bloc « Validation » qui liste chaque ligne rejetée (fichier, ligne du CSV, colonne, valeur, raison), puis un résumé : transactions insérées, lignes rejetées, fichiers traités, fichiers déjà traités. Les sommes et le comptage des montants supérieurs à 5000 portent sur les seules lignes insérées.
+
 ### 4.4 Traitement
 
 La pipeline doit réaliser les traitements suivants :
@@ -116,6 +133,14 @@ Le flux attendu est :
 
 La pipeline ne devra pas dépendre du système de fichiers local pour lire les CSV dans le fonctionnement cible du niveau 2.
 
+
+Choix d'implémentation :
+
+- Le module `src/storage/` utilise **Boto3** avec un `endpoint_url` pointant sur MinIO. Les identifiants (`MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`), l'adresse (`MINIO_ENDPOINT`) et le bucket (`MINIO_BUCKET`) viennent de variables d'environnement : fichier `.env` local ignoré par git, secrets et variables GitHub en CI/CD. Aucune valeur par défaut n'est écrite dans le dépôt.
+- Le bucket est créé s'il n'existe pas. Après chaque upload, la taille de l'objet stocké est comparée à celle du fichier local ; une différence lève une erreur.
+- Les fichiers sont stockés à la racine du bucket, la clé étant le nom du fichier CSV. La pipeline lit **uniquement** depuis MinIO : elle génère les CSV dans un dossier temporaire, les envoie dans le bucket, puis relit les objets du bucket pour les traiter.
+- Les tests d'intégration utilisent un bucket dédié `<MINIO_BUCKET>-test`, créé puis supprimé, afin de ne jamais toucher aux données applicatives.
+
 ### 4.7 Anti-doublon
 
 La pipeline doit empêcher le retraitement d'un fichier déjà traité.
@@ -127,6 +152,9 @@ Une stratégie basée sur l'identification du fichier sera utilisée, notamment 
 - et d'une table de suivi en base.
 
 Un fichier traité avec succès ne doit pas être traité une deuxième fois lors d'un retry ou d'une nouvelle exécution.
+
+
+Le hash SHA-256 est calculé sur le contenu lu dans MinIO et stocké dans `processed_files` (colonne unique). Les transactions d'un fichier et son enregistrement dans `processed_files` sont écrits dans une seule transaction SQL.
 
 ### 4.8 Retry
 
@@ -145,6 +173,15 @@ Pour chaque opération concernée :
 6. produire un message d'erreur explicite.
 
 Le retry ne doit pas provoquer de doublons.
+
+
+Choix d'implémentation (`src/retry.py`) :
+
+- **3 tentatives** maximum, **2 s** d'attente puis doublement à chaque échec (backoff x2), sans attente après la dernière tentative. Réglable par les variables d'environnement optionnelles `RETRY_MAX_ATTEMPTS` et `RETRY_DELAY_SECONDS`.
+- **MinIO** : sont retentées les erreurs de connexion, les délais dépassés, les erreurs HTTP 5xx et le throttling. Les erreurs permanentes (objet absent, accès refusé) ne sont pas retentées.
+- **MySQL** : sont retentées les erreurs de connexion perdue ou impossible, les deadlocks et les attentes de verrou. Les erreurs permanentes (accès refusé, base inconnue) ne sont pas retentées.
+- **Pas de doublon** : chaque tentative d'insertion utilise une connexion neuve et une transaction atomique. Après un échec, la tentative suivante vérifie d'abord si le fichier est déjà enregistré (cas où le commit a réussi mais où la réponse s'est perdue). La contrainte d'unicité sur le hash est le dernier filet : un doublon est interprété comme « déjà traité » et n'est ni retenté ni signalé comme erreur.
+- **Arrêt propre** : si toutes les tentatives échouent, la pipeline s'arrête avec un message `ERREUR` indiquant l'opération, le nombre de tentatives et la dernière cause, et un code de sortie 1. Les fichiers déjà traités restent en base.
 
 ---
 

@@ -1,12 +1,12 @@
-"""Tests contre un vrai MySQL (docker compose up -d --wait). Ignorés sinon."""
-from collections.abc import Iterator
-
+"""Couche base de données contre un vrai MySQL (docker compose up -d --wait)."""
 import pymysql
 import pytest
 from pymysql.connections import Connection
 
-from src.database import MissingConfigError, get_connection, init_db, insert_transactions, is_file_processed
+from src.database import insert_transactions, is_file_processed
 from src.processing import flag_high_value_transactions
+from tests.integration.conftest import fetch_all
+
 
 RAW = [
     {
@@ -21,29 +21,8 @@ RAW = [
 ]
 
 
-@pytest.fixture
-def conn() -> Iterator[Connection]:
-    try:
-        c = get_connection()
-    except MissingConfigError:
-        pytest.skip("Variables MYSQL_* non définies")
-    except pymysql.err.OperationalError:
-        pytest.skip("MySQL indisponible")
-    init_db(c)
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM transactions")
-        cur.execute("DELETE FROM processed_files")
-    c.commit()
-    yield c
-    c.close()
-
-
 def _count(conn: Connection, table: str) -> int:
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {table}")
-        row = cur.fetchone()
-    conn.commit()
-    return int(row[0]) if row else 0
+    return int(fetch_all(conn, f"SELECT COUNT(*) FROM {table}")[0][0])
 
 
 def test_insert_and_track_file(conn: Connection) -> None:

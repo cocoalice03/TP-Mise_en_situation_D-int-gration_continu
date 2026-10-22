@@ -8,3 +8,5 @@ python-dotenv
 pytest
 mypy
 types-PyMySQL
+moto[s3]
+boto3-stubs[s3]

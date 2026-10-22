@@ -20,7 +20,7 @@ def generate_transactions(
         if i == 0:
             montant = 15000.00  # Cas 1 : gros montant (alerte / seuil)
         elif i == 1:
-            montant = -50.00  # Cas 2 : montant négatif (anomalie)
+            montant = -50.00  # Cas 2 : montant négatif (anomalie, rejetée par la validation)
         else:
             montant = round(rng.uniform(10.0, 2500.0), 2)
 
