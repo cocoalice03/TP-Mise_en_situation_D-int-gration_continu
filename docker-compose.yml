@@ -1,12 +1,25 @@
+# Un seul fichier pour tous les environnements.
+#
+#   Développement / CI : MySQL + MinIO, l'application tourne hors Docker
+#       docker compose up -d --wait
+#   Production (VM, déployée par .github/workflows/cd.yml) : même fichier + l'application
+#       docker compose up -d --wait mysql minio
+#       docker compose --profile job run --rm app        # une exécution (cron toutes les 5 min)
+#
+# Les valeurs viennent du fichier .env voisin (jamais dans le dépôt) ou de l'environnement
+# (secrets / variables GitHub en CI et en CD).
+
 services:
   mysql:
     image: mysql:8.4
     container_name: transactions-mysql
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD non défini}
       MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE non défini}
       MYSQL_USER: ${MYSQL_USER:?MYSQL_USER non défini}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD non défini}
+    # Publié sur toutes les interfaces (accessible depuis n'importe quelle IP).
     ports:
       - "3306:3306"
     volumes:
@@ -18,8 +31,10 @@ services:
       retries: 20
 
   minio:
+    # MinIO a retiré ses images de Docker Hub : miroir communautaire figé (SPECIFICATIONS.md §4.6).
     image: scnd/minio-mirror:RELEASE.2025-09-07T16-13-09Z
     container_name: transactions-minio
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER non défini}
@@ -34,6 +49,30 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # Application : conteneur éphémère (une exécution de la pipeline), lancé à la demande puis
+  # régulièrement par cron en production. Le profil évite qu'il soit démarré par `up`.
+  app:
+    # En production : image publiée sur Docker Hub (APP_IMAGE écrit par le CD dans .env).
+    # En local : `docker compose --profile job build app` construit l'image depuis le Dockerfile.
+    image: ${APP_IMAGE:-transactions-pipeline:local}
+    build: .
+    profiles: ["job"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER non défini}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD non défini}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE non défini}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER non défini}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD non défini}
+      MINIO_BUCKET: ${MINIO_BUCKET:?MINIO_BUCKET non défini}
 
 volumes:
   mysql_data:

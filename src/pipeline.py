@@ -2,7 +2,9 @@
 import csv
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from pprint import pprint
 from typing import Any
@@ -84,9 +86,14 @@ def run_pipeline(generate: bool = True) -> PipelineReport:
 
 
 def _generate_and_upload(client: Any, bucket: str) -> None:
-    # 1. Génération des CSV dans un dossier temporaire, puis envoi dans MinIO
+    # 1. Génération de NOUVEAUX fichiers à chaque exécution (graine aléatoire, noms
+    #    uniques, dates du jour), dans un dossier temporaire, puis envoi dans MinIO
+    now = datetime.now().replace(microsecond=0)
+    run_id = f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
     with tempfile.TemporaryDirectory() as tmp:
-        files = create_csv_files(output_dir=Path(tmp))
+        files = create_csv_files(
+            output_dir=Path(tmp), seed=None, run_id=run_id, start_date=now
+        )
         keys = upload_files(client, bucket, files)
     print(f"{len(keys)} fichiers envoyés dans MinIO (bucket {bucket}).")
 

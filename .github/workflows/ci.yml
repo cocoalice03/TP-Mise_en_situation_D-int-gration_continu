@@ -13,6 +13,9 @@ on:
       - "requirements.txt"
       - "pytest.ini"
       - "docker-compose.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "run-pipeline.sh"
       - ".github/workflows/ci.yml"
   pull_request:
     paths: *relevant_paths
@@ -55,6 +58,12 @@ jobs:
 
       - name: Tests unitaires (Pytest)
         run: python -m pytest tests/unit -v
+
+      # Détecte une erreur de Dockerfile avant le CD, qui publie cette image.
+      - name: Construire l'image Docker (validation du Dockerfile)
+        run: |
+          docker build -t transactions-app:ci .
+          docker run --rm transactions-app:ci python -c "import src.pipeline; print('image OK')"
 
   # ------------------------------------------------------------------
   # 2. Intégration : MySQL + MinIO démarrés avec Docker Compose.

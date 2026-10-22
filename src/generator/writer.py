@@ -17,24 +17,38 @@ def write_csv(rows: list[dict[str, str]], file_path: Path) -> None:
         writer.writerows(rows)
 
 
+DEFAULT_START_DATE = datetime(2026, 10, 1, 8, 0, 0)
+
+
 def create_csv_files(
     num_files: int = 3,
     output_dir: str | Path = "data/raw",
-    corrupt: bool = False
+    corrupt: bool = False,
+    seed: int | None = 42,
+    run_id: str | None = None,
+    start_date: datetime = DEFAULT_START_DATE,
 ) -> list[Path]:
-    """Génère `num_files` CSV de transactions et retourne leurs chemins."""
-    # Générateur dédié pour garantir la reproductibilité dans la CI
-    rng = random.Random(42)
+    """Génère `num_files` CSV de transactions et retourne leurs chemins.
+
+    Par défaut la génération est reproductible (graine 42, mêmes noms de fichiers),
+    ce qui sert aux tests et à la CI. Pour produire de NOUVEAUX fichiers à chaque
+    exécution, passer `seed=None` (graine aléatoire), un `run_id` unique (inclus
+    dans les noms de fichiers, qui ne s'écrasent donc pas) et une `start_date`.
+    """
+    # Générateur dédié : jamais l'état global de `random`
+    rng = random.Random(seed)
 
     path = Path(output_dir)
     path.mkdir(parents=True, exist_ok=True)
 
-    start_date = datetime(2026, 10, 1, 8, 0, 0)
     created: list[Path] = []
 
     for file_idx in range(1, num_files + 1):
         num_records = rng.randint(5, 10)
-        file_path = path / f"transactions_batch_{file_idx}.csv"
+        name = f"transactions_batch_{file_idx}.csv"
+        if run_id is not None:
+            name = f"transactions_{run_id}_batch_{file_idx}.csv"
+        file_path = path / name
         batch_start_time = start_date + timedelta(hours=file_idx * 2)
 
         transactions = generate_transactions(num_records, batch_start_time, rng)

@@ -50,11 +50,30 @@ def test_pipeline_reads_only_from_bucket_not_local_disk(
     assert len(fake_db["hashes"]) == 2
 
 
-def test_rerun_skips_already_processed_files(s3: Any, fake_db: dict[str, Any]) -> None:
+def test_rerun_without_generation_skips_already_processed_files(
+    s3: Any, fake_db: dict[str, Any]
+) -> None:
     pipeline.run_pipeline()
     rows = fake_db["rows"]
-    pipeline.run_pipeline()
+    report = pipeline.run_pipeline(generate=False)  # mêmes fichiers dans le bucket
     assert fake_db["rows"] == rows
+    assert report.files_processed == 0 and report.files_skipped == 3
+
+
+def test_each_run_generates_new_files_without_overwriting_previous_ones(
+    s3: Any, fake_db: dict[str, Any]
+) -> None:
+    pipeline.run_pipeline()
+    first_keys = list_csv_keys(s3, BUCKET)
+    rows_after_first = fake_db["rows"]
+
+    report = pipeline.run_pipeline()
+    second_keys = list_csv_keys(s3, BUCKET)
+
+    assert len(first_keys) == 3 and len(second_keys) == 6  # rien n'est écrasé
+    assert set(first_keys) < set(second_keys)
+    assert report.files_processed == 3 and report.files_skipped == 3
+    assert fake_db["rows"] > rows_after_first  # de nouvelles transactions sont traitées
 
 
 @pytest.fixture

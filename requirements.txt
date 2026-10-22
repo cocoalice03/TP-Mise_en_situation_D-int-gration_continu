@@ -1,4 +1,5 @@
-# Application
+# Dépendances du projet (application, tests et qualité) : un seul fichier,
+# utilisé en local, par la CI et par l'image Docker.
 pandas
 boto3
 PyMySQL
