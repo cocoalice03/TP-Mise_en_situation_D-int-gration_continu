@@ -200,6 +200,14 @@ La CI sera réalisée avec **GitHub Actions**.
 
 Le but est de détecter automatiquement les régressions et les erreurs avant le déploiement.
 
+Workflow implémenté (`.github/workflows/ci.yml`) :
+
+- **Déclenchement** : push sur `main`, pull request, ou lancement manuel, uniquement si `src/`, `tests/`, `sql/`, `requirements.txt`, `pytest.ini`, `docker-compose.yml` ou le workflow lui-même changent. Une nouvelle exécution annule la précédente sur la même branche.
+- **Job `quality`** : installation des dépendances, `mypy src tests`, `pytest tests/unit`. Il n'a besoin ni de secret ni de service Docker (S3 simulé avec moto, MySQL simulé).
+- **Job `integration`** (après `quality`) : vérifie que les secrets et variables sont définis, démarre MySQL et MinIO avec `docker compose up -d --wait`, exécute `pytest tests/integration`, affiche les logs des services en cas d'échec, puis arrête et supprime les services (`docker compose down -v`). Il est ignoré pour les pull requests venant d'un fork, qui n'ont pas accès aux secrets.
+- **Job `status`** : calcule le statut final `SUCCESS` ou `FAILED` et l'écrit dans le résumé de l'exécution. Le workflow échoue si `quality` ou `integration` échoue.
+- **Secrets du dépôt** : `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, `MINIO_ROOT_PASSWORD`. **Variables du dépôt** : `MYSQL_USER`, `MYSQL_DATABASE`, `MINIO_ROOT_USER`, `MINIO_BUCKET`.
+
 ---
 
 ## 6. CD – Déploiement continu

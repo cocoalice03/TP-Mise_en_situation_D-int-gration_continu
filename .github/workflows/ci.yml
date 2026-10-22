@@ -1,0 +1,137 @@
+name: CI
+
+# Intégration continue (spec §5) : dépendances, Mypy, tests unitaires,
+# services Docker (MySQL + MinIO), tests d'intégration, statut SUCCESS / FAILED.
+
+on:
+  push:
+    branches: [main]
+    paths: &relevant_paths
+      - "src/**"
+      - "tests/**"
+      - "sql/**"
+      - "requirements.txt"
+      - "pytest.ini"
+      - "docker-compose.yml"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths: *relevant_paths
+  workflow_dispatch:
+
+# Une nouvelle exécution annule la précédente sur la même branche.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. Qualité : dépendances, typage, tests unitaires.
+  #    Aucun secret ni service nécessaire (S3 simulé, MySQL simulé).
+  # ------------------------------------------------------------------
+  quality:
+    name: Typage et tests unitaires
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Installer les dépendances
+        run: python -m pip install -r requirements.txt
+
+      - name: Vérifier le typage (Mypy)
+        run: python -m mypy src tests
+
+      - name: Tests unitaires (Pytest)
+        run: python -m pytest tests/unit -v
+
+  # ------------------------------------------------------------------
+  # 2. Intégration : MySQL + MinIO démarrés avec Docker Compose.
+  #    Les identifiants viennent des secrets / variables du dépôt GitHub
+  #    (Settings > Secrets and variables > Actions), jamais du code.
+  # ------------------------------------------------------------------
+  integration:
+    name: Tests d'intégration (Docker)
+    needs: quality
+    # Les PR venant d'un fork n'ont pas accès aux secrets.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # secrets
+      MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+      MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+      MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+      # variables
+      MYSQL_USER: ${{ vars.MYSQL_USER }}
+      MYSQL_DATABASE: ${{ vars.MYSQL_DATABASE }}
+      MINIO_ROOT_USER: ${{ vars.MINIO_ROOT_USER }}
+      MINIO_BUCKET: ${{ vars.MINIO_BUCKET }}
+      # services lancés par docker compose, exposés sur localhost
+      MYSQL_HOST: localhost
+      MYSQL_PORT: "3306"
+      MINIO_ENDPOINT: http://localhost:9000
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Installer les dépendances
+        run: python -m pip install -r requirements.txt
+
+      - name: Démarrer MySQL et MinIO (Docker Compose)
+        run: docker compose up -d --wait
+
+      - name: Tests d'intégration (Pytest)
+        run: python -m pytest tests/integration -v -rs
+
+      - name: Logs des services (en cas d'échec)
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Arrêter les services
+        if: always()
+        run: docker compose down -v
+
+  # ------------------------------------------------------------------
+  # 3. Statut final : SUCCESS ou FAILED.
+  # ------------------------------------------------------------------
+  status:
+    name: Statut CI
+    needs: [quality, integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Résumé
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+        run: |
+          echo "quality     : ${QUALITY}"
+          echo "integration : ${INTEGRATION}"
+          # "skipped" n'est accepté que pour l'intégration (PR depuis un fork)
+          if [ "${QUALITY}" = "success" ] && { [ "${INTEGRATION}" = "success" ]; }; then
+            status=SUCCESS
+          else
+            status=FAILED
+          fi
+          echo "## Statut CI : ${status}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Typage et tests unitaires : ${QUALITY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tests d'intégration : ${INTEGRATION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "CI ${status}"
+          [ "${status}" = "SUCCESS" ]
