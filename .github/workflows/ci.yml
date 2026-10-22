@@ -62,7 +62,7 @@ jobs:
   #    (Settings > Secrets and variables > Actions), jamais du code.
   # ------------------------------------------------------------------
   integration:
-    name: Tests d'intégration (Docker)
+    name: Tests d'intégration
     needs: quality
     # Les PR venant d'un fork n'ont pas accès aux secrets.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
