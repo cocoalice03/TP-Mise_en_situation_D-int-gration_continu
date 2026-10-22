@@ -28,7 +28,10 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD non défini}"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      # La première initialisation de MySQL peut être lente sur une petite VM :
+      # les échecs pendant start_period ne comptent pas.
+      start_period: 60s
+      retries: 30
 
   minio:
     # MinIO a retiré ses images de Docker Hub : miroir communautaire figé (SPECIFICATIONS.md §4.6).

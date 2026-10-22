@@ -1,13 +1,9 @@
 name: CD
 
-# Déploiement continu (spec §6) :
-#   1. construire l'image Docker de l'application et la publier sur Docker Hub ;
-#   2. préparer l'environnement de déploiement (VM : Docker, docker-compose.yml, .env) ;
-#   3. déployer : la VM récupère (pull) l'image publiée, démarre les services, et le
-#      traitement est planifié (cron).
-#
-# Se déclenche uniquement après une CI réussie sur main (push), et déploie
-# exactement le commit validé par cette CI.
+# Déploiement continu (spec §6), après une CI réussie sur main :
+#   1. build   : construire l'image Docker et la publier sur Docker Hub ;
+#   2. deploy  : sur la VM, récupérer (pull) l'image publiée, lancer les services
+#                (MySQL, MinIO), exécuter la pipeline et planifier son lancement (cron).
 
 on:
   workflow_run:
@@ -25,44 +21,24 @@ permissions:
   contents: read
 
 env:
-  # Nom du dépôt Docker Hub : <compte Docker Hub>/transactions-pipeline
-  IMAGE_NAME: transactions-pipeline
+  # Le commit exact validé par la CI (pas le dernier de main).
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  # DOCKERHUB_USERNAME doit être en minuscules (exigence de Docker Hub).
+  IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/transactions-pipeline
 
 jobs:
-  # ------------------------------------------------------------------
-  # 1. Construire l'image et la publier.
-  # ------------------------------------------------------------------
   build:
-    name: Construire l'image Docker
+    name: Build & Push Docker Hub
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-      sha: ${{ steps.meta.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # Le commit exact validé par la CI (pas le dernier de main).
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Nom et version de l'image
-        id: meta
-        env:
-          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
-            echo "::error::DOCKERHUB_USERNAME (variable) et DOCKERHUB_TOKEN (secret) doivent être définis (Settings > Secrets and variables > Actions)"
-            exit 1
-          fi
-          sha="$(git rev-parse HEAD)"
-          echo "image=${DOCKERHUB_USERNAME,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
-          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          ref: ${{ env.SHA }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -71,192 +47,93 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Construire et publier l'image
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha }}
-            ${{ steps.meta.outputs.image }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ env.SHA }}
 
-      - name: Vérifier l'image publiée
-        env:
-          IMAGE: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha }}
-        run: |
-          docker run --rm "$IMAGE" python -c "import src.pipeline; print('image OK')"
-          docker run --rm "$IMAGE" id -u | grep -qx 1000   # ne tourne pas en root
-
-  # ------------------------------------------------------------------
-  # 2 + 3. Préparer la VM et déployer.
-  #    Les secrets et variables viennent de ceux du dépôt GitHub.
-  #    La connexion SSH se fait par mot de passe (secret SSH_PASSWORD), jamais écrit
-  #    dans le dépôt ni dans les logs. La VM récupère l'image publiée sur Docker Hub
-  #    (dépôt public : l'image ne contient aucun secret) et lance les services.
-  # ------------------------------------------------------------------
   deploy:
-    name: Déployer sur la VM
+    name: Deploy on VM
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # connexion SSH (sshpass lit le mot de passe dans SSHPASS)
-      SSH_HOST: ${{ secrets.SSH_HOST }}
-      SSH_USER: ${{ secrets.SSH_USER }}
-      SSHPASS: ${{ secrets.SSH_PASSWORD }}
-      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-      SSH_PORT: ${{ vars.SSH_PORT || '22' }}
-      # configuration de l'application (mêmes noms qu'en CI)
-      MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
-      MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
-      MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
-      MYSQL_USER: ${{ vars.MYSQL_USER }}
-      MYSQL_DATABASE: ${{ vars.MYSQL_DATABASE }}
-      MINIO_ROOT_USER: ${{ vars.MINIO_ROOT_USER }}
-      MINIO_BUCKET: ${{ vars.MINIO_BUCKET }}
-      # version à déployer
-      APP_IMAGE: ${{ needs.build.outputs.image }}:${{ needs.build.outputs.sha }}
-      DEPLOY_DIR: transactions-app
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.build.outputs.sha }}
+          ref: ${{ env.SHA }}
 
-      - name: Vérifier les secrets et variables
-        run: |
-          missing=0
-          for name in SSH_HOST SSH_USER SSHPASS MYSQL_ROOT_PASSWORD MYSQL_PASSWORD \
-                      MINIO_ROOT_PASSWORD MYSQL_USER MYSQL_DATABASE MINIO_ROOT_USER MINIO_BUCKET; do
-            if [ -z "${!name}" ]; then
-              label="$name"; [ "$name" = SSHPASS ] && label=SSH_PASSWORD
-              echo "::error::${label} n'est pas défini (Settings > Secrets and variables > Actions)"
-              missing=1
-            fi
-          done
-          # Les valeurs sont écrites entre quotes simples dans le .env de la VM.
-          for name in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD MINIO_ROOT_PASSWORD MYSQL_USER \
-                      MYSQL_DATABASE MINIO_ROOT_USER MINIO_BUCKET; do
-            case "${!name}" in
-              *"'"*|*$'\n'*) echo "::error::${name} ne doit contenir ni quote simple ni retour à la ligne"; missing=1 ;;
-            esac
-          done
-          exit $missing
+      # Fichiers nécessaires sur la VM : le compose et le script lancé par cron.
+      - name: Copy deployment files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          source: "docker-compose.yml,run-pipeline.sh"
+          target: /home/${{ secrets.SSH_USER }}/transactions-app
+          overwrite: true
 
-      - name: Configurer SSH (mot de passe)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq sshpass
+      - name: Deploy application on VM
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_IMAGE: ${{ env.IMAGE }}:${{ env.SHA }}
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          MYSQL_USER: ${{ vars.MYSQL_USER }}
+          MYSQL_DATABASE: ${{ vars.MYSQL_DATABASE }}
+          MINIO_ROOT_USER: ${{ vars.MINIO_ROOT_USER }}
+          MINIO_BUCKET: ${{ vars.MINIO_BUCKET }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script_stop: true
+          envs: APP_IMAGE,MYSQL_ROOT_PASSWORD,MYSQL_PASSWORD,MINIO_ROOT_PASSWORD,MYSQL_USER,MYSQL_DATABASE,MINIO_ROOT_USER,MINIO_BUCKET
+          script: |
+            cd ~/transactions-app
+            chmod +x run-pipeline.sh
 
-          mkdir -p ~/.ssh "${RUNNER_TEMP}/bin"
-          chmod 700 ~/.ssh
-          if [ -n "$SSH_KNOWN_HOSTS" ]; then
-            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          else
-            echo "::warning::SSH_KNOWN_HOSTS non défini : l'empreinte de la VM est acceptée à la première connexion"
-            ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" > ~/.ssh/known_hosts
-          fi
-          cat > ~/.ssh/config <<EOF
-          Host deploy-target
-            HostName ${SSH_HOST}
-            User ${SSH_USER}
-            Port ${SSH_PORT}
-            PreferredAuthentications password
-            PubkeyAuthentication no
-            StrictHostKeyChecking yes
-            ServerAliveInterval 30
-          EOF
-          chmod 600 ~/.ssh/config
+            # .env de production (droits 600) : jamais dans le dépôt ni dans l'image
+            ( umask 077
+              {
+                printf "APP_IMAGE='%s'\n" "$APP_IMAGE"
+                printf "MYSQL_ROOT_PASSWORD='%s'\n" "$MYSQL_ROOT_PASSWORD"
+                printf "MYSQL_PASSWORD='%s'\n" "$MYSQL_PASSWORD"
+                printf "MYSQL_USER='%s'\n" "$MYSQL_USER"
+                printf "MYSQL_DATABASE='%s'\n" "$MYSQL_DATABASE"
+                printf "MINIO_ROOT_USER='%s'\n" "$MINIO_ROOT_USER"
+                printf "MINIO_ROOT_PASSWORD='%s'\n" "$MINIO_ROOT_PASSWORD"
+                printf "MINIO_BUCKET='%s'\n" "$MINIO_BUCKET"
+              } > .env
+            )
 
-          # `ssh` devient « sshpass -e ssh » pour toutes les étapes suivantes
-          cat > "${RUNNER_TEMP}/bin/ssh" <<'EOF'
-          #!/bin/sh
-          exec sshpass -e /usr/bin/ssh "$@"
-          EOF
-          chmod +x "${RUNNER_TEMP}/bin/ssh"
-          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+            # Pull de l'image publiée sur Docker Hub (dépôt public), puis lancement des services
+            docker compose --profile job pull
+            docker compose up -d --wait --wait-timeout 300 mysql minio
 
-      # --- 2. Préparer l'environnement de déploiement -------------------
-      - name: Installer Docker sur la VM (si absent)
-        run: |
-          ssh deploy-target 'bash -s' <<'REMOTE'
-          set -euo pipefail
-          need_sudo=0
-          command -v docker >/dev/null 2>&1 || need_sudo=1
-          id -nG | grep -qw docker || need_sudo=1
-          if [ "$need_sudo" = 1 ] && ! sudo -n true 2>/dev/null; then
-            echo "ERREUR : Docker doit être installé / autorisé pour $USER mais sudo demande un mot de passe." >&2
-            echo "Installer Docker sur la VM et ajouter $USER au groupe docker, puis relancer." >&2
-            exit 1
-          fi
-          if ! command -v docker >/dev/null 2>&1; then
-            echo "Docker absent : installation"
-            curl -fsSL https://get.docker.com | sudo sh
-          fi
-          if ! id -nG | grep -qw docker; then
-            # Effectif aux connexions SSH suivantes (chaque étape ouvre une nouvelle session).
-            sudo usermod -aG docker "$USER"
-          fi
-          sudo systemctl enable --now docker 2>/dev/null || true
-          docker --version || sudo docker --version
-          REMOTE
+            # Première exécution : sert de test de fumée (échoue si l'application ne fonctionne pas)
+            docker compose --profile job run --rm -T app
 
-      - name: Copier les fichiers de déploiement et écrire le .env
-        run: |
-          ssh deploy-target "mkdir -p ~/${DEPLOY_DIR}"
-          ssh deploy-target "cat > ~/${DEPLOY_DIR}/docker-compose.yml" < docker-compose.yml
-          ssh deploy-target "cat > ~/${DEPLOY_DIR}/run-pipeline.sh" < run-pipeline.sh
+            # Lancement régulier : cron toutes les 5 minutes (entrée remplacée à chaque déploiement)
+            marker="# transactions-pipeline"
+            line="*/5 * * * * $HOME/transactions-app/run-pipeline.sh >> $HOME/transactions-app/pipeline.log 2>&1 $marker"
+            ( crontab -l 2>/dev/null | grep -vF "$marker" || true; echo "$line" ) | crontab -
 
-          # .env de production : droits 600, jamais dans le dépôt ni dans les logs
-          {
-            printf "APP_IMAGE='%s'\n" "$APP_IMAGE"
-            printf "MYSQL_ROOT_PASSWORD='%s'\n" "$MYSQL_ROOT_PASSWORD"
-            printf "MYSQL_PASSWORD='%s'\n" "$MYSQL_PASSWORD"
-            printf "MYSQL_USER='%s'\n" "$MYSQL_USER"
-            printf "MYSQL_DATABASE='%s'\n" "$MYSQL_DATABASE"
-            printf "MINIO_ROOT_USER='%s'\n" "$MINIO_ROOT_USER"
-            printf "MINIO_ROOT_PASSWORD='%s'\n" "$MINIO_ROOT_PASSWORD"
-            printf "MINIO_BUCKET='%s'\n" "$MINIO_BUCKET"
-          } | ssh deploy-target "umask 077 && cat > ~/${DEPLOY_DIR}/.env"
+            echo "Deployment successful"
 
-          ssh deploy-target "chmod 600 ~/${DEPLOY_DIR}/.env && chmod +x ~/${DEPLOY_DIR}/run-pipeline.sh"
-
-      # --- 3. Déployer la version validée --------------------------------
-      - name: Récupérer (pull) l'image publiée sur Docker Hub
-        run: |
-          # Aucun identifiant Docker Hub sur la VM : le dépôt de l'image doit être public.
-          ssh deploy-target "cd ~/${DEPLOY_DIR} && docker compose --profile job pull"
-
-      - name: Démarrer MySQL et MinIO
-        run: ssh deploy-target "cd ~/${DEPLOY_DIR} && docker compose up -d --wait mysql minio"
-
-      - name: Lancer le traitement une première fois
-        run: |
-          # La pipeline génère les nouveaux fichiers CSV, les envoie dans MinIO puis les traite.
-          # Sert aussi de test de fumée du déploiement : échoue si l'application ne fonctionne pas.
-          ssh deploy-target "cd ~/${DEPLOY_DIR} && docker compose --profile job run --rm -T app"
-
-      - name: Planifier le traitement régulier (cron, toutes les 5 minutes)
-        run: |
-          ssh deploy-target 'bash -s' <<'REMOTE'
-          set -euo pipefail
-          marker="# transactions-pipeline"
-          line="*/5 * * * * $HOME/transactions-app/run-pipeline.sh >> $HOME/transactions-app/pipeline.log 2>&1 $marker"
-          ( crontab -l 2>/dev/null | grep -vF "$marker" || true; echo "$line" ) | crontab -
-          crontab -l | grep -F "$marker"
-          REMOTE
-
-      - name: Enregistrer la version déployée
-        run: |
-          ssh deploy-target "cd ~/${DEPLOY_DIR} && { [ -f .deployed_image ] && cp .deployed_image .previous_image || true; } && echo '${APP_IMAGE}' > .deployed_image && docker image prune -f >/dev/null"
-
-      - name: Vérifier le déploiement
-        run: |
-          ssh deploy-target "cd ~/${DEPLOY_DIR} && docker compose ps"
-          {
-            echo "## Déploiement réussi"
-            echo "- Image : \`${APP_IMAGE}\`"
-            echo "- Traitement planifié toutes les 5 minutes (cron de la VM)"
-            echo "- Version précédente (pour un retour arrière manuel) : \`.previous_image\` sur la VM"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Diagnostic (en cas d'échec)
+        if: failure()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            cd ~/transactions-app || exit 0
+            docker compose ps -a
+            docker compose logs --tail=80 mysql minio
+            free -m
+            df -h /
