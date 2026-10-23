@@ -426,6 +426,16 @@ Une panne volontaire sera introduite afin de montrer :
 
 Des captures d'écran seront conservées pour le rendu final.
 
+Scénario retenu : **un bug silencieux dans le traitement**. Sur une branche de démonstration, le seuil strict de `flag_high_value_transactions` (`montant > threshold`, `src/processing/aggregations.py`) est remplacé par `>=` : une transaction d'exactement 5000.00 serait signalée à tort. Le programme tourne sans erreur, seuls les tests le détectent.
+
+- **Cause** : un caractère modifié (`>` devenu `>=`), visible dans le diff de la pull request.
+- **Échec de la pipeline** : le job « Typage et tests unitaires » échoue, le job d'intégration est ignoré, le statut final est FAILED, et le CD ne déploie rien.
+- **Message d'erreur** : trois tests de `tests/unit/test_processing.py` échouent, dont `test_amount_equal_to_threshold_is_not_high_value` : « 5000.00 ne dépasse pas le seuil de 5000 : le flag doit être faux (le seuil est strictement supérieur) ».
+- **Correction** : rétablir `>`.
+- **Succès après correction** : la CI est entièrement verte, tests d'intégration compris, et le CD déploie la version corrigée après la fusion.
+
+La panne est jouée sur une branche + pull request, jamais sur `main`. Le déroulé commande par commande, les messages attendus, la liste numérotée des captures à faire et d'autres pannes possibles (erreur de type détectée par Mypy, DDL invalide détecté par les tests d'intégration, CSV invalide rejeté par la validation) sont dans `docs/simulation-panne.md`. Les captures sont rangées dans `docs/captures/`.
+
 ---
 
 ## 14. Niveau 3 retenu
