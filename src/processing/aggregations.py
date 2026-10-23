@@ -44,6 +44,6 @@ def flag_high_value_transactions(
         # Copie superficielle pour garantir l'immutabilité de l'entrée
         new_row = row.copy()
         new_row["montant"] = float(row["montant"])
-        new_row["is_high_value"] = new_row["montant"] > threshold
+        new_row["is_high_value"] = new_row["montant"] >= threshold
         flagged_data.append(new_row)
     return flagged_data
