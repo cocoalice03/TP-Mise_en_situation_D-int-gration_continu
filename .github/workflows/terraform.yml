@@ -49,8 +49,8 @@ jobs:
   provision:
     name: Terraform Plan & Apply
     needs: validate
-    # S'exécute sur main uniquement si les identifiants AWS sont définis dans les secrets GitHub
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AWS_ACCESS_KEY_ID != ''
+    # S'exécute sur main lorsque la variable TERRAFORM_APPLY_ENABLED est à 'true'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.TERRAFORM_APPLY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
