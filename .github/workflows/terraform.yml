@@ -1,0 +1,84 @@
+name: Terraform IaC
+
+# Infrastructure as Code (Option 4 - Niveau 3) :
+#   1. validate : vérifie le formatage et la validité de la configuration Terraform
+#   2. deploy   : provisionne l'infrastructure cloud (si les secrets AWS sont configurés)
+#                 et expose l'IP publique de la VM pour le pipeline CD.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: terraform
+
+jobs:
+  validate:
+    name: Terraform fmt & validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9.0"
+
+      - name: Vérifier le formatage (terraform fmt)
+        run: terraform fmt -check -recursive
+
+      - name: Initialiser Terraform (sans backend distant)
+        run: terraform init -backend=false
+
+      - name: Valider la configuration (terraform validate)
+        run: terraform validate
+
+  provision:
+    name: Terraform Plan & Apply
+    needs: validate
+    # S'exécute sur main uniquement si les identifiants AWS sont définis dans les secrets GitHub
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AWS_ACCESS_KEY_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9.0"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Exporter l'IP publique de la VM
+        run: |
+          VM_IP=$(terraform output -raw vm_public_ip)
+          echo "VM déployée sur : ${VM_IP}"
+          echo "## Infrastructure déployée" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **IP publique (SSH_HOST)** : \`${VM_IP}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Connexion SSH** : \`$(terraform output -raw ssh_command)\`" >> "$GITHUB_STEP_SUMMARY"

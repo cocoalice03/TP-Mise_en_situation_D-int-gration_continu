@@ -1,0 +1,17 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - cron
+  - docker.io
+  - docker-compose-v2
+
+runcmd:
+  - systemctl enable --now docker
+  - systemctl enable --now cron
+  - usermod -aG docker ubuntu
+  - mkdir -p /home/ubuntu/transactions-app
+  - chown -R ubuntu:ubuntu /home/ubuntu/transactions-app

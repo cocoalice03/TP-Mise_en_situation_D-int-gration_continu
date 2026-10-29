@@ -5,4 +5,11 @@ data/raw/*
 .mypy_cache/
 .pytest_cache/
 .venv/
+venv/
 .env
+data_input/
+data_output/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

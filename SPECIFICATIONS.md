@@ -255,11 +255,30 @@ Docker Compose sera utilisé pour faciliter le démarrage de l'environnement loc
 
 ## 8. Infrastructure as Code
 
-**Terraform** est retenu pour la partie Infrastructure as Code.
+**Terraform** est retenu pour la partie Infrastructure as Code (`terraform/`).
 
-L'objectif est de décrire de manière reproductible les ressources nécessaires au projet plutôt que de dépendre uniquement de configurations manuelles.
+L'objectif est de décrire de manière reproductible toutes les ressources nécessaires à l'environnement de production dans le cloud plutôt que de dépendre d'une machine configurée manuellement.
 
-Les ressources exactes prises en charge par Terraform seront définies lors de la mise en œuvre de la partie niveau 3.
+### Ressources décrites dans `terraform/`
+
+- **Réseau (`main.tf`)** :
+  - `aws_vpc` (`10.0.0.0/16`) avec support DNS ;
+  - `aws_subnet` public (`10.0.1.0/24`) ;
+  - `aws_internet_gateway` et `aws_route_table` pour l'accès Internet ;
+  - `aws_security_group` ouvrant les ports `22` (SSH), `3306` (MySQL), `9000` (API S3 MinIO) et `9001` (Console MinIO).
+- **Accès & Identité (`main.tf`, `variables.tf`)** :
+  - `aws_key_pair` injectant la clé publique SSH (`var.ssh_public_key`) pour l'utilisateur `ubuntu`.
+- **Calcul & Stockage (`main.tf`, `cloud-init.yaml`)** :
+  - `aws_instance` Ubuntu 24.04 LTS avec volume disque GP3 de 20 Go ;
+  - `aws_eip` (Elastic IP) fournissant une adresse IP publique fixe (`output.vm_public_ip`) utilisée comme `SSH_HOST` par le workflow CD (`.github/workflows/cd.yml`) ;
+  - `cloud-init.yaml` exécuté au premier démarrage pour installer et activer automatiquement Docker, Docker Compose et `cron`, configurer les droits de l'utilisateur `ubuntu` et préparer `/home/ubuntu/transactions-app`.
+
+### Reproductibilité et chaînage avec le CD
+
+1. **Validation automatique** : le workflow `.github/workflows/terraform.yml` vérifie `terraform fmt -check`, `terraform init` et `terraform validate` à chaque modification de `terraform/`.
+2. **Provisionnement** : `terraform apply` crée le réseau, le pare-feu et la VM déjà équipée de Docker, puis affiche `vm_public_ip`.
+3. **Chaînage CD** : l'IP produite (`vm_public_ip`) alimente `SSH_HOST` utilisé par `.github/workflows/cd.yml` pour déployer les conteneurs (`mysql`, `minio`, `app`) et planifier le cron.
+4. **Test de reproductibilité** : un `terraform destroy` suivi d'un `terraform apply` recrée intégralement l'infrastructure à l'identique sans aucune action manuelle.
 
 ---
 
