@@ -1,0 +1,46 @@
+#cloud-config
+# Premier démarrage de la VM (fichier rendu par Terraform avec templatefile).
+# 1. Attend le disque de données, le formate s'il est vierge et le monte sur /var/lib/docker :
+#    les volumes Docker (MySQL, MinIO) sont donc sur ce disque et survivent à la VM.
+# 2. Installe Docker Engine + le plugin Compose (script officiel Docker).
+# 3. Autorise l'utilisateur à utiliser Docker sans sudo (nécessaire au CD).
+# Journal : /var/log/cloud-init-output.log ; attendre la fin : cloud-init status --wait
+
+write_files:
+  - path: /usr/local/sbin/setup-data-disk.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      MOUNT=/var/lib/docker
+
+      # Le disque est rattaché par Terraform APRES la création de la VM : on l'attend (10 min max).
+      DEVICE=""
+      for attempt in $(seq 1 120); do
+        for candidate in /dev/disk/azure/data/by-lun/0 /dev/disk/azure/scsi1/lun0; do
+          if [ -e "$candidate" ]; then
+            DEVICE=$(readlink -f "$candidate")
+            break 2
+          fi
+        done
+        sleep 5
+      done
+      if [ -z "$DEVICE" ]; then
+        echo "ERREUR : disque de données (LUN 0) introuvable" >&2
+        exit 1
+      fi
+
+      # Formater uniquement un disque vierge : une VM recréée retrouve ses données.
+      if ! blkid "$DEVICE" >/dev/null 2>&1; then
+        mkfs.ext4 -F -L dockerdata "$DEVICE"
+      fi
+
+      UUID=$(blkid -s UUID -o value "$DEVICE")
+      mkdir -p "$MOUNT"
+      grep -q "$UUID" /etc/fstab || echo "UUID=$UUID $MOUNT ext4 defaults,nofail 0 2" >> /etc/fstab
+      mountpoint -q "$MOUNT" || mount "$MOUNT"
+      echo "Disque de données $DEVICE monté sur $MOUNT"
+
+# Docker n'est installé que si le disque est bien monté (sinon ses données iraient sur le disque système).
+runcmd:
+  - [bash, -c, "/usr/local/sbin/setup-data-disk.sh && curl -fsSL https://get.docker.com | sh && usermod -aG docker ${admin_username} && systemctl enable --now docker"]

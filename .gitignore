@@ -6,3 +6,11 @@ data/raw/*
 .pytest_cache/
 .venv/
 .env
+
+# Terraform (état local et valeurs : jamais dans le dépôt)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log

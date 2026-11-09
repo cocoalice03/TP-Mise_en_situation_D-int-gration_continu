@@ -1,0 +1,43 @@
+name: Terraform
+
+# Vérifie le code Terraform (spec §8) à chaque modification : format et validité.
+# Aucun identifiant Azure : le compte de l'école ne permet pas de créer l'identité
+# d'application nécessaire à un `apply` depuis GitHub. L'infrastructure est créée
+# depuis un poste avec `az login` (voir docs/terraform.md).
+
+on:
+  push:
+    branches: [main]
+    paths: &terraform_paths
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    paths: *terraform_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Format et validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Vérifier le format (terraform fmt)
+        run: terraform fmt -check -recursive -diff
+
+      - name: Initialiser (sans état ni identifiants)
+        run: terraform init -backend=false -input=false
+
+      - name: Valider la configuration
+        run: terraform validate -no-color

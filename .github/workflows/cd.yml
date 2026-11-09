@@ -70,7 +70,7 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "docker-compose.yml,run-pipeline.sh"
           target: /home/${{ secrets.SSH_USER }}/transactions-app
           overwrite: true
@@ -89,7 +89,7 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script_stop: true
           envs: APP_IMAGE,MYSQL_ROOT_PASSWORD,MYSQL_PASSWORD,MINIO_ROOT_PASSWORD,MYSQL_USER,MYSQL_DATABASE,MINIO_ROOT_USER,MINIO_BUCKET
           script: |
@@ -130,7 +130,7 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/transactions-app || exit 0
             docker compose ps -a
