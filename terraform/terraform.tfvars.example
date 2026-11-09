@@ -1,0 +1,18 @@
+# Copier en terraform.tfvars (ignoré par git) et remplir.
+
+# az account show --query id -o tsv
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# Contenu de ~/.ssh/transactions_deploy.pub (la clé privée va dans le secret GitHub SSH_PRIVATE_KEY)
+ssh_public_key = "ssh-ed25519 AAAA... transactions-deploy"
+
+# Optionnel : valeurs par défaut dans variables.tf
+# location          = "denmarkeast"   # régions autorisées : germanywestcentral, denmarkeast, belgiumcentral, switzerlandnorth, austriaeast
+# vm_size           = "Standard_B2s"
+# admin_username    = "azureuser"
+# data_disk_size_gb = 32
+
+# Adresses autorisées sur MySQL (3306) et MinIO (9000, 9001). Vide = fermés.
+# Votre adresse : curl -s https://ifconfig.me   puis   ["<votre-ip>/32"]
+# Tout ouvrir (déconseillé) : ["0.0.0.0/0"]
+admin_cidrs = []

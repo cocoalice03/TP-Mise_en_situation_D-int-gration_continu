@@ -222,10 +222,10 @@ Après validation de la CI, le workflow CD devra pouvoir :
 
 Stratégie retenue (`.github/workflows/cd.yml`) :
 
-- **Cible** : la machine virtuelle fournie pour le projet, accessible en SSH (utilisateur `ubuntu`) et déjà équipée de Docker. L'environnement déployé contient MySQL, MinIO et le traitement, tous dans des conteneurs, décrits par le **même `docker-compose.yml`** que celui du développement et de la CI (un seul fichier, le service de l'application étant dans le profil `job`). Kubernetes n'est pas retenu : un cluster et de nombreux manifests seraient disproportionnés pour ce projet. La VM sera créée par Terraform (§8).
+- **Cible** : la machine virtuelle Azure **créée par Terraform** (§8), accessible en SSH par clé (utilisateur `azureuser`), Docker installé à son premier démarrage. L'environnement déployé contient MySQL, MinIO et le traitement, tous dans des conteneurs, décrits par le **même `docker-compose.yml`** que celui du développement et de la CI (un seul fichier, le service de l'application étant dans le profil `job`). Kubernetes n'est pas retenu : un cluster et de nombreux manifests seraient disproportionnés pour ce projet.
 - **Déclenchement** : automatique après une CI réussie sur `main` (push), et manuel depuis `main`. Le CD déploie exactement le commit validé par la CI. Le déploiement est systématique : il n'y a pas d'interrupteur.
 - **Job `build`** : construit l'image à partir du `Dockerfile` (Python 3.12, utilisateur non root, dépendances de `requirements.txt` ; aucun identifiant dans l'image) et la publie sur **Docker Hub** (`<compte>/transactions-pipeline`) avec deux étiquettes : le SHA du commit (version précise) et `latest`. Un seul fichier `requirements.txt` sert en local, en CI et dans l'image, au prix d'une image plus lourde (outils de test inclus). La CI construit aussi l'image pour détecter une erreur de `Dockerfile` avant le CD.
-- **Job `deploy`** : se connecte en SSH à la VM (actions `appleboy/scp-action` et `appleboy/ssh-action`, authentification par mot de passe, car c'est le seul accès fourni) puis :
+- **Job `deploy`** : se connecte en SSH à la VM (actions `appleboy/scp-action` et `appleboy/ssh-action`, authentification par clé SSH, secret `SSH_PRIVATE_KEY`) puis :
   1. copie `docker-compose.yml` et `run-pipeline.sh` dans `~/transactions-app` ;
   2. écrit le fichier `.env` (droits 600) à partir des secrets et variables du dépôt GitHub ;
   3. récupère l'image publiée avec `docker compose pull`, sans aucun identifiant Docker Hub (le dépôt doit donc être public ; l'image ne contient aucun secret) ;
@@ -233,9 +233,9 @@ Stratégie retenue (`.github/workflows/cd.yml`) :
   5. exécute une première fois le traitement, qui sert de test de fumée : le déploiement échoue si l'application ne fonctionne pas ;
   6. installe l'entrée cron, remplacée à chaque déploiement.
   En cas d'échec, une étape de diagnostic affiche l'état des conteneurs, leurs logs, la mémoire et l'espace disque de la VM.
-- **Ports** : MySQL (3306), l'API MinIO (9000) et sa console (9001) sont publiés sur toutes les interfaces de la machine : ils sont joignables depuis n'importe quelle adresse IP, sous réserve du pare-feu du réseau de la VM.
+- **Ports** : MySQL (3306), l'API MinIO (9000) et sa console (9001) sont publiés sur toutes les interfaces de la machine. Sur Azure, le pare-feu créé par Terraform ne les ouvre qu'aux adresses de la variable `admin_cidrs` (aucune par défaut) ; seul le port 22 est ouvert à tous.
 - **Traitement régulier** : une entrée cron sur la VM lance la pipeline toutes les 5 minutes (`run-pipeline.sh`, `flock` empêche deux exécutions simultanées). Comme en développement, chaque exécution commence par générer de **nouveaux** fichiers CSV (graine aléatoire, dates du jour, noms uniques horodatés qui ne s'écrasent pas), les envoie dans MinIO, puis traite ce qui s'y trouve ; le mécanisme anti-doublon (§4.7) évite tout retraitement d'un fichier déjà traité. La génération reste reproductible (graine 42, noms fixes) par défaut, pour les tests et la CI. La sortie est écrite dans `pipeline.log`.
-- **Secrets du dépôt** (Settings, Secrets and variables, Actions ; ceux de la CI sont partagés avec le CD) : `SSH_HOST`, `SSH_USER`, `SSH_PASSWORD`, `DOCKERHUB_TOKEN` (jeton d'accès Docker Hub avec droit d'écriture), `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, `MINIO_ROOT_PASSWORD`. **Variables** : `DOCKERHUB_USERNAME` (en minuscules), `MYSQL_USER`, `MYSQL_DATABASE`, `MINIO_ROOT_USER`, `MINIO_BUCKET`. Les mots de passe ne doivent pas contenir de quote simple.
+- **Secrets du dépôt** (Settings, Secrets and variables, Actions ; ceux de la CI sont partagés avec le CD) : `SSH_HOST` (IP publique, sortie Terraform `public_ip`), `SSH_USER` (`azureuser`), `SSH_PRIVATE_KEY` (clé privée dont la clé publique est installée par Terraform), `DOCKERHUB_TOKEN` (jeton d'accès Docker Hub avec droit d'écriture), `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, `MINIO_ROOT_PASSWORD`. **Variables** : `DOCKERHUB_USERNAME` (en minuscules), `MYSQL_USER`, `MYSQL_DATABASE`, `MINIO_ROOT_USER`, `MINIO_BUCKET`. Les mots de passe ne doivent pas contenir de quote simple.
 
 ---
 
@@ -259,26 +259,20 @@ Docker Compose sera utilisé pour faciliter le démarrage de l'environnement loc
 
 L'objectif est de décrire de manière reproductible toutes les ressources nécessaires à l'environnement de production dans le cloud plutôt que de dépendre d'une machine configurée manuellement.
 
-### Ressources décrites dans `terraform/`
+Mise en œuvre (`terraform/`, détails et procédure dans `docs/terraform.md`) :
 
-- **Réseau (`main.tf`)** :
-  - `aws_vpc` (`10.0.0.0/16`) avec support DNS ;
-  - `aws_subnet` public (`10.0.1.0/24`) ;
-  - `aws_internet_gateway` et `aws_route_table` pour l'accès Internet ;
-  - `aws_security_group` ouvrant les ports `22` (SSH), `3306` (MySQL), `9000` (API S3 MinIO) et `9001` (Console MinIO).
-- **Accès & Identité (`main.tf`, `variables.tf`)** :
-  - `aws_key_pair` injectant la clé publique SSH (`var.ssh_public_key`) pour l'utilisateur `ubuntu`.
-- **Calcul & Stockage (`main.tf`, `cloud-init.yaml`)** :
-  - `aws_instance` Ubuntu 24.04 LTS avec volume disque GP3 de 20 Go ;
-  - `aws_eip` (Elastic IP) fournissant une adresse IP publique fixe (`output.vm_public_ip`) utilisée comme `SSH_HOST` par le workflow CD (`.github/workflows/cd.yml`) ;
-  - `cloud-init.yaml` exécuté au premier démarrage pour installer et activer automatiquement Docker, Docker Compose et `cron`, configurer les droits de l'utilisateur `ubuntu` et préparer `/home/ubuntu/transactions-app`.
-
-### Reproductibilité et chaînage avec le CD
-
-1. **Validation automatique** : le workflow `.github/workflows/terraform.yml` vérifie `terraform fmt -check`, `terraform init` et `terraform validate` à chaque modification de `terraform/`.
-2. **Provisionnement** : `terraform apply` crée le réseau, le pare-feu et la VM déjà équipée de Docker, puis affiche `vm_public_ip`.
-3. **Chaînage CD** : l'IP produite (`vm_public_ip`) alimente `SSH_HOST` utilisé par `.github/workflows/cd.yml` pour déployer les conteneurs (`mysql`, `minio`, `app`) et planifier le cron.
-4. **Test de reproductibilité** : un `terraform destroy` suivi d'un `terraform apply` recrée intégralement l'infrastructure à l'identique sans aucune action manuelle.
+- **Cloud** : Azure, provider `azurerm`, avec le compte fourni par l'école.
+- **Répartition des rôles** : Terraform crée l'**infrastructure** ; le CD (§6) déploie l'**application** sur cette infrastructure. Terraform ne manipule aucun mot de passe applicatif, donc son état n'en contient pas.
+- **Ressources déployées** (10) : groupe de ressources ; réseau virtuel et sous-réseau ; groupe de sécurité réseau (port 22 ouvert, ports 3306, 9000 et 9001 limités aux adresses de `admin_cidrs`) ; IP publique statique ; carte réseau ; VM Ubuntu 24.04 `Standard_B2s` (2 vCPU, 4 Go) avec connexion par clé SSH uniquement et Docker installé au premier démarrage par cloud-init ; disque géré de 32 Go et son rattachement, monté sur `/var/lib/docker` pour que les données MySQL et MinIO survivent à la recréation de la VM.
+- **Non déployés, et pourquoi** :
+  - cluster Kubernetes managé : coût et complexité disproportionnés pour un traitement par lots toutes les 5 minutes ;
+  - base MySQL managée : MySQL reste un conteneur (aucun coût en plus, aucun changement de code, identique au développement), au prix de l'absence de sauvegarde automatique ;
+  - stockage S3 : Azure n'offre pas l'API S3, donc MinIO est conservé en conteneur, ce qui garde le même code partout ;
+  - registre d'images : Docker Hub est conservé ;
+  - coffre de secrets : les secrets restent dans GitHub.
+- **Exécution** : `terraform apply` est lancé depuis un poste connecté avec `az login`, car le compte de l'école ne permet pas de créer l'identité d'application qu'un `apply` depuis GitHub Actions exigerait. Le workflow `.github/workflows/terraform.yml` vérifie automatiquement le code (`terraform fmt -check`, `terraform validate`) à chaque modification.
+- **État** : fichier local `terraform.tfstate`, jamais commité, conservé par la personne qui applique (une seule personne de l'équipe). Un état distant aurait demandé un compte de stockage créé à part avant `terraform init`.
+- **Coût** : la VM est éteinte (`az vm deallocate`) quand elle ne sert pas, et l'infrastructure supprimée (`terraform destroy`) après le rendu.
 
 ---
 
