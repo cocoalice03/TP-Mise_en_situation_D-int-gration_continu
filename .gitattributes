@@ -1,0 +1,10 @@
+# Fichiers lus ou exécutés sous Linux (VM, runners GitHub) : toujours en fins de ligne LF,
+# même sur un poste Windows avec core.autocrlf=true. Sinon le modèle cloud-init change de
+# contenu (Terraform veut recréer la VM) et les scripts bash cassent (#!/bin/bash\r).
+*.sh      text eol=lf
+*.tf      text eol=lf
+*.tftpl   text eol=lf
+*.hcl     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+Dockerfile text eol=lf
