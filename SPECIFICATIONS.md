@@ -255,9 +255,9 @@ Docker Compose sera utilisé pour faciliter le démarrage de l'environnement loc
 
 ## 8. Infrastructure as Code
 
-**Terraform** est retenu pour la partie Infrastructure as Code.
+**Terraform** est retenu pour la partie Infrastructure as Code (`terraform/`).
 
-L'objectif est de décrire de manière reproductible les ressources nécessaires au projet plutôt que de dépendre uniquement de configurations manuelles.
+L'objectif est de décrire de manière reproductible toutes les ressources nécessaires à l'environnement de production dans le cloud plutôt que de dépendre d'une machine configurée manuellement.
 
 Mise en œuvre (`terraform/`, détails et procédure dans `docs/terraform.md`) :
 
