@@ -97,7 +97,7 @@ Les tests d'intégration travaillent dans une base `<MYSQL_DATABASE>_test` et un
 |---|---|---|
 | **CI** (`ci.yml`) | push sur `main`, pull request | installe les dépendances, Mypy, tests unitaires, construit l'image Docker, démarre MySQL et MinIO avec Docker Compose, tests d'intégration, statut final SUCCESS ou FAILED |
 | **CD** (`cd.yml`) | après une CI réussie sur `main`, ou à la main | construit et publie l'image sur Docker Hub, puis, sur la VM : copie le compose, écrit le `.env`, démarre MySQL et MinIO, lance une première exécution et planifie la pipeline toutes les 5 minutes (cron) |
-| **Terraform** (`terraform.yml`) | modification de `terraform/` | vérifie le format et la validité du code Terraform |
+| **Terraform** (`terraform.yml`) | modification de `terraform/` (push sur `main`, pull request), ou à la main | vérifie le format et la validité ; sur une pull request, `terraform plan` (affiché dans le résumé du job) ; sur `main`, `terraform apply`. Connexion à Azure par OIDC, sans mot de passe ni clé stockés |
 
 Secrets et variables GitHub (Settings, Secrets and variables, Actions) :
 
@@ -106,6 +106,7 @@ Secrets et variables GitHub (Settings, Secrets and variables, Actions) :
 | `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, `MINIO_ROOT_PASSWORD` | `MYSQL_USER`, `MYSQL_DATABASE`, `MINIO_ROOT_USER`, `MINIO_BUCKET` |
 | `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` | `DOCKERHUB_USERNAME` (en minuscules) |
 | `DOCKERHUB_TOKEN` | |
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `SSH_PUBLIC_KEY` (Terraform) | |
 
 ## Infrastructure (Terraform, Azure)
 
@@ -116,7 +117,9 @@ Terraform crée l'infrastructure de production ; le CD y déploie l'application.
 - VM Ubuntu 24.04 `Standard_B2s` avec connexion par clé SSH et Docker installé au premier démarrage ;
 - disque de données de 32 Go pour les volumes MySQL et MinIO.
 
-Les choix (et ce qui n'est pas déployé : Kubernetes, base managée, etc.), la procédure complète et le dépannage sont dans [`docs/terraform.md`](docs/terraform.md).
+Les changements d'infrastructure passent par une pull request : GitHub Actions affiche le `terraform plan`, puis applique à la fusion sur `main`. L'état Terraform est partagé dans Azure (compte de stockage `sttfstatetransdk`, avec verrouillage et historique des versions), donc le même état sert à la CI et aux postes.
+
+Les choix (et ce qui n'est pas déployé : Kubernetes, base managée, etc.), la procédure complète et le dépannage sont dans [`docs/terraform.md`](docs/terraform.md). Depuis un poste (`az login`), pour voir ou appliquer un changement :
 
 ```bash
 cd terraform
@@ -193,8 +196,8 @@ Les choix actuels sont adaptés à un projet d'école (un seul serveur, un créd
 
 | Limite actuelle | Pourquoi aujourd'hui | Perspective | Effort |
 |---|---|---|---|
-| `terraform apply` lancé depuis un poste, pas par GitHub Actions | Le compte Azure de l'école ne permet pas de créer une identité d'application | Fédération OIDC entre GitHub et Azure (aucun secret stocké) : `plan` automatique sur chaque pull request, `apply` à la fusion sur `main` avec approbation d'un environnement GitHub. Le code Terraform est déjà prêt, seule l'authentification change | Moyen, avec un droit accordé par l'école |
-| État Terraform en fichier local | Une seule personne applique ; un état distant demande un stockage créé au préalable | Backend `azurerm` : compte de stockage dédié, verrouillage automatique, historique des versions, partage dans l'équipe | Faible |
+| `terraform apply` automatique à la fusion sur `main`, sans approbation humaine | Seul un administrateur du dépôt peut créer un environnement GitHub avec relecteurs obligatoires | Environnement GitHub `infra` avec relecteurs ; ajouter `environment: infra` au job `apply` et remplacer l'identifiant fédéré `github-main` par le sujet `environment:infra` | Faible |
+| L'identité de GitHub est Contributor sur tout l'abonnement | Terraform crée lui-même le groupe de ressources | Créer le groupe hors de Terraform et limiter le rôle à ce groupe ; une identité en lecture seule pour le `plan` des pull requests | Faible |
 | Aucune sauvegarde de MySQL ni de MinIO | Base en conteneur sur un disque de la VM | Court terme : `mysqldump` planifié vers MinIO ou vers un stockage Azure, et instantanés du disque de données. Long terme : Azure Database for MySQL (sauvegardes automatiques, restauration à un instant donné), au prix d'une connexion TLS à ajouter dans `get_connection()` | Faible à moyen |
 | Un seul serveur, pas de haute disponibilité | Coût | Exécuter la pipeline en tâche planifiée gérée (Azure Container Apps Jobs, qui remplacent le cron) et utiliser des services managés pour la base et le stockage : plus de VM à maintenir | Élevé |
 | Image MinIO non officielle et figée | MinIO ne publie plus d'images (§4.6) | Construire notre propre image depuis les sources, ou passer à un service compatible S3 maintenu. Le code d'accès est isolé dans `src/storage/` et se change sans toucher au reste | Moyen |
@@ -210,7 +213,7 @@ Les choix actuels sont adaptés à un projet d'école (un seul serveur, un créd
 | Pas de supervision ni d'alerte | Hors périmètre du sujet | Agent Azure Monitor sur la VM, alertes sur la mémoire, le disque et l'échec du cron ; métriques de la pipeline (lignes insérées et rejetées) | Moyen |
 | Lignes rejetées visibles seulement dans `pipeline.log` | Choix d'un rapport en console | Table `rejected_rows` (fichier, ligne, colonne, raison) pour les analyser et les corriger | Faible |
 | Image Docker lourde (outils de test inclus, `pandas` non utilisé) | Un seul `requirements.txt`, plus simple à gérer | Fichier de dépendances d'exécution séparé, construction de l'image en plusieurs étapes : téléchargement et déploiement plus rapides | Faible |
-| Infrastructure non testée automatiquement au-delà de `validate` | Pas d'identifiants Azure dans la CI | Analyse statique sans identifiants (`tflint`, `checkov`) dès maintenant ; `terraform plan` en CI une fois l'OIDC en place | Faible |
+| Aucune analyse de sécurité du code Terraform | `validate` et `plan` vérifient la syntaxe et l'effet, pas les bonnes pratiques | Analyse statique dans `terraform.yml` (`tflint`, `checkov`) | Faible |
 
 ## Documentation
 

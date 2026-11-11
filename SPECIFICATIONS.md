@@ -270,8 +270,13 @@ Mise en œuvre (`terraform/`, détails et procédure dans `docs/terraform.md`) :
   - stockage S3 : Azure n'offre pas l'API S3, donc MinIO est conservé en conteneur, ce qui garde le même code partout ;
   - registre d'images : Docker Hub est conservé ;
   - coffre de secrets : les secrets restent dans GitHub.
-- **Exécution** : `terraform apply` est lancé depuis un poste connecté avec `az login`, car le compte de l'école ne permet pas de créer l'identité d'application qu'un `apply` depuis GitHub Actions exigerait. Le workflow `.github/workflows/terraform.yml` vérifie automatiquement le code (`terraform fmt -check`, `terraform validate`) à chaque modification.
-- **État** : fichier local `terraform.tfstate`, jamais commité, conservé par la personne qui applique (une seule personne de l'équipe). Un état distant aurait demandé un compte de stockage créé à part avant `terraform init`.
+- **Exécution** : par GitHub Actions (`.github/workflows/terraform.yml`) :
+  - `terraform fmt -check` et `terraform validate` à chaque modification ;
+  - `terraform plan` sur chaque pull request, affiché dans le résumé du job ;
+  - `terraform apply` à chaque fusion sur `main`, sans approbation humaine (seul un administrateur du dépôt pourrait créer l'environnement GitHub nécessaire).
+
+  Connexion à Azure par **OIDC** : l'identité managée `id-github-terraform` n'accepte que les jetons de ce dépôt (branche `main` et pull requests). Aucun mot de passe ni clé Azure n'est stocké. Une identité managée plutôt qu'un enregistrement d'application, que le compte de l'école ne permet pas de créer. Secrets du workflow : `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `SSH_PUBLIC_KEY`. Un `apply` depuis un poste (`az login`) reste possible.
+- **État** : distant, backend `azurerm` : blob `transactions.tfstate` dans le compte de stockage `sttfstatetransdk` (groupe `rg-tfstate`). Verrouillage automatique, historique par versioning des blobs, accès par Entra ID sans clé de compte. Ce compte de stockage et l'identité sont créés une fois avec `az`, hors de l'état Terraform : ils doivent exister avant `terraform init`, et un `terraform destroy` ne doit pas les supprimer.
 - **Coût** : la VM est éteinte (`az vm deallocate`) quand elle ne sert pas, et l'infrastructure supprimée (`terraform destroy`) après le rendu.
 
 ---
