@@ -14,6 +14,18 @@ terraform {
       version = "~> 4.0"
     }
   }
+
+  # État partagé dans Azure (verrouillage par bail de blob, historique par versioning).
+  # Le groupe rg-tfstate, ce compte de stockage et l'identité GitHub sont créés une fois
+  # avec az (docs/terraform.md), hors de cet état : un terraform destroy ne les supprime pas.
+  # Accès par Entra ID (az login en local, OIDC dans GitHub Actions), sans clé de compte.
+  backend "azurerm" {
+    resource_group_name  = "rg-tfstate"
+    storage_account_name = "sttfstatetransdk"
+    container_name       = "tfstate"
+    key                  = "transactions.tfstate"
+    use_azuread_auth     = true
+  }
 }
 
 provider "azurerm" {

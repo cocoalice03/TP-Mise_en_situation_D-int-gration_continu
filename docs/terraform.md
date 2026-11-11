@@ -21,7 +21,12 @@ Chaque outil fait ce qu'il fait le mieux. Terraform ne manipule **aucun mot de p
  │                              └─ disque de données 32 Go → /var/lib/docker  │
  │                                   (volumes MySQL et MinIO)                 │
  └──────────────────────────────────────────────────────────────────────────┘
-        ▲ terraform apply (depuis un poste, az login)        ▲ CD (SSH, clé)
+        ▲ terraform apply (GitHub Actions, OIDC)              ▲ CD (SSH, clé)
+       │
+ ┌─────┴──────────── groupe rg-tfstate (créé une fois avec az, hors Terraform) ┐
+ │ compte de stockage sttfstatetransdk : conteneur tfstate (état, verrou)       │
+ │ identité managée id-github-terraform : confiance OIDC pour ce dépôt          │
+ └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Ce qui est déployé, et pourquoi
@@ -36,20 +41,20 @@ Chaque outil fait ce qu'il fait le mieux. Terraform ne manipule **aucun mot de p
 | **Cluster Kubernetes managé** | **Non déployé.** | Coût (AKS consomme vite le crédit étudiant) et complexité disproportionnés pour un traitement par lots lancé toutes les 5 minutes. Docker Compose et cron suffisent (spec §6). |
 | **Registre d'images** | **Non déployé** : Docker Hub conservé. | Déjà en place et gratuit. Un Azure Container Registry ajouterait un coût et des identifiants. |
 | **Coffre de secrets** (Key Vault) | **Non déployé.** | Les secrets restent dans GitHub et sont écrits dans le `.env` de la VM par le CD. Un Key Vault demanderait des droits que le compte de l'école ne donne pas forcément. |
-| **État Terraform** | **Fichier local** `terraform/terraform.tfstate`, jamais commité. | Un état distant dans Azure exigerait un compte de stockage créé **avant** `terraform init`, donc une configuration à part : complexité inutile si une seule personne lance `apply`. Règle d'équipe : une seule personne applique, et elle conserve ce fichier. |
-| **Exécution** | **Depuis un poste**, avec `az login`. GitHub Actions vérifie le code (`terraform.yml`). | Le compte Azure de l'école ne permet pas de créer l'identité d'application dont GitHub Actions aurait besoin pour un `apply`. Le code ne dépend pas de ce choix : avec une telle identité, il pourrait être appliqué depuis GitHub avec les variables `ARM_*`, sans réécriture. |
+| **État Terraform** | **Distant** : backend `azurerm`, blob `transactions.tfstate` dans le compte de stockage `sttfstatetransdk` (groupe `rg-tfstate`). | Un seul état pour la CI et pour tous les postes. Verrouillage automatique (bail sur le blob) : deux `apply` ne peuvent pas écrire en même temps. Versioning des blobs et suppression réversible de 30 jours : on peut revenir à une version précédente de l'état. Accès par Entra ID (`use_azuread_auth`), sans clé de compte. Le compte de stockage est créé avec `az`, **hors de cet état** : il doit exister avant `terraform init`, et un `terraform destroy` ne doit jamais le supprimer. |
+| **Exécution** | **GitHub Actions** (`terraform.yml`) : `plan` sur chaque pull request, `apply` à chaque fusion sur `main`. Le poste (`az login`) reste possible. | Connexion par **OIDC** : GitHub présente un jeton signé, que l'identité managée `id-github-terraform` accepte uniquement pour ce dépôt (branche `main` et pull requests). Aucun mot de passe ni clé Azure n'est stocké dans GitHub. Une identité managée plutôt qu'un enregistrement d'application : le compte de l'école ne permet pas de créer ce dernier, mais un Owner de l'abonnement peut créer une identité managée. Tout changement d'infrastructure passe ainsi par une revue de code et laisse une trace. |
 
 ## Fichiers
 
 | Fichier | Contenu |
 |---|---|
-| `terraform/main.tf` | Version de Terraform, provider `azurerm` (`~> 4.0`) et toutes les ressources. |
+| `terraform/main.tf` | Version de Terraform, provider `azurerm` (`~> 4.0`), backend `azurerm` (état distant) et toutes les ressources. |
 | `terraform/variables.tf` | Entrées : abonnement, région, taille de VM, utilisateur, clé publique, taille du disque, adresses autorisées. |
 | `terraform/outputs.tf` | Sorties : IP publique, utilisateur, commande SSH, URL de la console MinIO. |
 | `terraform/cloud-init.yaml.tftpl` | Premier démarrage : montage du disque de données, installation de Docker. |
 | `terraform/terraform.tfvars.example` | Modèle des valeurs à fournir (copié en `terraform.tfvars`, ignoré par git). |
 | `terraform/.terraform.lock.hcl` | Version exacte du provider, pour que tout le monde utilise la même. |
-| `.github/workflows/terraform.yml` | Vérification automatique : `terraform fmt -check` et `terraform validate`. |
+| `.github/workflows/terraform.yml` | `fmt -check` et `validate` à chaque modification ; `plan` sur les pull requests ; `apply` sur `main`. |
 
 ## Créer l'infrastructure
 
@@ -69,16 +74,67 @@ az login
 az account show --query "{nom:name, id:id}" -o table
 ```
 
-### 2. Créer la clé SSH du déploiement (une fois)
+### 2. Préparer l'état distant et la connexion de GitHub (une fois)
+
+Ces ressources sont créées avec `az`, **hors de Terraform** : l'état doit exister avant `terraform init`, et un `terraform destroy` ne doit supprimer ni l'état ni l'identité de GitHub. Il faut être **Owner** de l'abonnement (c'est le cas sur Azure for Students). En Git Bash, `MSYS_NO_PATHCONV=1` empêche la conversion des chemins `/subscriptions/...`.
+
+```bash
+export MSYS_NO_PATHCONV=1
+SUB=$(az account show --query id -o tsv)
+REPO=cocoalice03/TP-Mise_en_situation_D-int-gration_continu
+
+# Stockage de l'état : versioning (historique) et suppression réversible
+az group create -n rg-tfstate -l denmarkeast
+az storage account create -n sttfstatetransdk -g rg-tfstate -l denmarkeast \
+  --sku Standard_LRS --kind StorageV2 --min-tls-version TLS1_2 --allow-blob-public-access false
+az storage account blob-service-properties update --account-name sttfstatetransdk -g rg-tfstate \
+  --enable-versioning true --enable-delete-retention true --delete-retention-days 30 \
+  --enable-container-delete-retention true --container-delete-retention-days 30
+az storage container-rm create --storage-account sttfstatetransdk -g rg-tfstate -n tfstate --public-access off
+SA_ID=$(az storage account show -n sttfstatetransdk -g rg-tfstate --query id -o tsv)
+
+# Vous : lecture et écriture de l'état depuis votre poste
+az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" \
+  --assignee-principal-type User --role "Storage Blob Data Contributor" --scope "$SA_ID"
+
+# Identité de GitHub Actions, acceptée seulement pour main et les pull requests de ce dépôt
+az identity create -n id-github-terraform -g rg-tfstate -l denmarkeast
+az identity federated-credential create --identity-name id-github-terraform -g rg-tfstate -n github-main \
+  --issuer https://token.actions.githubusercontent.com --audiences api://AzureADTokenExchange \
+  --subject "repo:$REPO:ref:refs/heads/main"
+az identity federated-credential create --identity-name id-github-terraform -g rg-tfstate -n github-pr \
+  --issuer https://token.actions.githubusercontent.com --audiences api://AzureADTokenExchange \
+  --subject "repo:$REPO:pull_request"
+PID=$(az identity show -n id-github-terraform -g rg-tfstate --query principalId -o tsv)
+az role assignment create --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
+  --role Contributor --scope "/subscriptions/$SUB"
+az role assignment create --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" --scope "$SA_ID"
+
+az identity show -n id-github-terraform -g rg-tfstate --query clientId -o tsv   # → AZURE_CLIENT_ID
+```
+
+Puis créer les secrets du workflow Terraform (Settings, Secrets and variables, Actions, ou `gh secret set`) :
+
+| Secret | Valeur |
+|---|---|
+| `AZURE_CLIENT_ID` | `clientId` de l'identité (dernière commande ci-dessus) |
+| `AZURE_TENANT_ID` | `az account show --query tenantId -o tsv` |
+| `AZURE_SUBSCRIPTION_ID` | `az account show --query id -o tsv` |
+| `SSH_PUBLIC_KEY` | contenu de `~/.ssh/transactions_deploy.pub` (étape 3) |
+
+Les autres variables Terraform gardent leurs valeurs par défaut de `variables.tf` : si vous changez une valeur dans votre `terraform.tfvars` local (par exemple `admin_cidrs`), changez aussi la valeur par défaut, sinon la CI l'annulera au prochain `apply`.
+
+### 3. Créer la clé SSH du déploiement (une fois)
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/transactions_deploy -C transactions-deploy -N ""
 ```
 
 - La **clé publique** (`~/.ssh/transactions_deploy.pub`) va dans `terraform.tfvars`.
-- La **clé privée** (`~/.ssh/transactions_deploy`) devient le secret GitHub `SSH_PRIVATE_KEY` (étape 5). Ne la commitez jamais.
+- La **clé privée** (`~/.ssh/transactions_deploy`) devient le secret GitHub `SSH_PRIVATE_KEY` (étape 6). Ne la commitez jamais.
 
-### 3. Renseigner les valeurs
+### 4. Renseigner les valeurs
 
 ```bash
 cd terraform
@@ -87,13 +143,19 @@ cp terraform.tfvars.example terraform.tfvars
 
 Dans `terraform.tfvars`, mettez votre `subscription_id` (`az account show --query id -o tsv`) et le contenu de la clé publique (`cat ~/.ssh/transactions_deploy.pub`).
 
-### 4. Créer l'infrastructure
+### 5. Créer l'infrastructure
+
+Le premier `apply` se fait depuis le poste (l'état distant est déjà utilisé) :
 
 ```bash
 terraform init
 terraform plan      # doit annoncer 10 ressources à créer
 terraform apply     # répondre "yes"
 ```
+
+Ensuite, chaque modification de `terraform/` passe par une pull request : le job **Plan** affiche ce qui va changer dans le résumé du job, et le job **Apply** l'applique dès la fusion sur `main`. On peut aussi relancer l'apply à la main (onglet **Actions**, workflow **Terraform**, **Run workflow** sur `main`).
+
+> **Passer d'un état local à l'état distant** (infrastructure déjà créée avec l'ancien `terraform.tfstate` local) : garder une copie du fichier, puis `terraform init -migrate-state` (répondre `yes`) ; `terraform plan` doit indiquer `No changes`. Les fichiers `terraform.tfstate*` locaux peuvent alors être supprimés.
 
 Puis attendez la fin du premier démarrage (installation de Docker, quelques minutes) :
 
@@ -103,7 +165,7 @@ ssh -i ~/.ssh/transactions_deploy azureuser@$(terraform output -raw public_ip) "
 
 Attendu : `status: done`, la version de Docker Compose, et un disque d'environ 32 Go monté sur `/var/lib/docker`.
 
-### 5. Brancher le CD sur la nouvelle VM
+### 6. Brancher le CD sur la nouvelle VM
 
 ```bash
 gh secret set SSH_HOST --body "$(terraform output -raw public_ip)"
@@ -114,7 +176,7 @@ gh secret delete SSH_PASSWORD
 
 En PowerShell, pour la clé privée : `Get-Content $HOME\.ssh\transactions_deploy -Raw | gh secret set SSH_PRIVATE_KEY`.
 
-### 6. Déployer l'application
+### 7. Déployer l'application
 
 Dans GitHub : onglet **Actions**, workflow **CD**, **Run workflow** sur `main`. Le CD copie le compose, écrit le `.env`, démarre MySQL et MinIO, lance une première exécution et installe le cron.
 
@@ -125,7 +187,7 @@ ssh -i ~/.ssh/transactions_deploy azureuser@$(terraform output -raw public_ip)
 cd ~/transactions-app && docker compose ps && crontab -l
 ```
 
-### 7. Arrêter l'ancienne VM du prof
+### 8. Arrêter l'ancienne VM du prof
 
 Le CD ne déploie plus sur l'ancienne VM, mais son cron continue de tourner. Sur l'ancienne VM : `crontab -e` (retirer la ligne `# transactions-pipeline`) puis `cd ~/transactions-app && docker compose down`.
 
@@ -148,12 +210,16 @@ Le CD ne déploie plus sur l'ancienne VM, mais son cron continue de tourner. Sur
 | Erreur d'enregistrement d'un fournisseur de ressources (`MissingSubscriptionRegistration`) | Fournisseur Azure non enregistré dans l'abonnement | `az provider register --namespace Microsoft.Compute` (idem `Microsoft.Network`) puis relancer `apply` |
 | `docker: command not found` sur la VM | cloud-init pas terminé ou en échec | `cloud-init status --wait`, puis lire `/var/log/cloud-init-output.log` |
 | Le CD échoue à la connexion SSH | Secrets pas à jour | Vérifier `SSH_HOST`, `SSH_USER` (`azureuser`) et `SSH_PRIVATE_KEY` (clé privée complète, lignes `BEGIN` et `END` comprises) |
-| `terraform.tfstate` perdu | État local supprimé | Terraform ne connaît plus les ressources : les supprimer dans le portail Azure (groupe `rg-transactions-dk`) ou les réimporter avec `terraform import` |
+| `Error acquiring the state lock` | Un autre `plan`/`apply` tourne (CI ou poste), ou un job a été interrompu en gardant le verrou | Attendre la fin de l'autre exécution. Si aucun ne tourne : `terraform force-unlock <ID du verrou affiché>` |
+| `AuthorizationPermissionMismatch` (403) au `terraform init` | Rôle `Storage Blob Data Contributor` absent sur `sttfstatetransdk`, ou pas encore propagé | Attribuer le rôle (étape 2) et attendre quelques minutes |
+| Dans GitHub : `AADSTS70021: No matching federated identity record found` | Le jeton OIDC ne correspond à aucun identifiant fédéré (autre dépôt, autre branche que `main`, dépôt renommé) | Vérifier le sujet avec `az identity federated-credential list --identity-name id-github-terraform -g rg-tfstate -o table` |
+| Dans GitHub : `ARM_CLIENT_ID` vide, `building AzureRM Client` | Secrets `AZURE_*` absents (ou pull request venant d'un fork, qui n'a pas accès aux secrets) | Créer les secrets (étape 2) |
+| État corrompu ou modifié par erreur | — | Restaurer une version précédente du blob `transactions.tfstate` (versioning) dans le portail : compte `sttfstatetransdk`, conteneur `tfstate`, onglet **Versions** |
 
 ## Limites assumées
 
 - Pas de base managée ni de sauvegarde automatique : un instantané du disque de données peut être pris à la main dans Azure.
-- Pas d'exécution de `apply` par GitHub Actions, faute de droits sur le compte de l'école ; seule la vérification du code est automatisée.
-- État local : une seule personne de l'équipe applique les changements d'infrastructure.
+- `apply` automatique à la fusion sur `main`, sans approbation humaine : seul un administrateur du dépôt peut créer un environnement GitHub avec relecteurs obligatoires.
+- L'identité de GitHub est Contributor sur tout l'abonnement, car Terraform crée lui-même le groupe de ressources.
 
-Les pistes pour dépasser ces limites (OIDC, état distant, sauvegardes, services managés…) sont détaillées dans la section « Limites et perspectives » du [README](../README.md#limites-et-perspectives).
+Les pistes pour dépasser ces limites (approbation, droits réduits, sauvegardes, services managés…) sont détaillées dans la section « Limites et perspectives » du [README](../README.md#limites-et-perspectives).

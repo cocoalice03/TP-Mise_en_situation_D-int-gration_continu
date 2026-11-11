@@ -1,9 +1,12 @@
 name: Terraform
 
-# Vérifie le code Terraform (spec §8) à chaque modification : format et validité.
-# Aucun identifiant Azure : le compte de l'école ne permet pas de créer l'identité
-# d'application nécessaire à un `apply` depuis GitHub. L'infrastructure est créée
-# depuis un poste avec `az login` (voir docs/terraform.md).
+# Infrastructure Azure (spec §8) :
+# - toute modification : format et validation, sans identifiants ;
+# - pull request : terraform plan, affiché dans le résumé du job ;
+# - main (fusion ou lancement manuel) : terraform apply.
+# Connexion à Azure par OIDC : GitHub présente un jeton signé, accepté par l'identité
+# managée id-github-terraform uniquement pour ce dépôt (main et pull requests).
+# Aucun mot de passe ni clé Azure n'est stocké. État partagé dans Azure (backend azurerm).
 
 on:
   push:
@@ -18,6 +21,18 @@ on:
 permissions:
   contents: read
 
+env:
+  TF_VERSION: 1.17.0
+  TF_IN_AUTOMATION: "true"
+  # Lus par le provider azurerm et par le backend.
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  # Variables Terraform sans valeur par défaut (les autres gardent celles de variables.tf).
+  TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+
 jobs:
   validate:
     name: Format et validation
@@ -30,7 +45,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.8
+          terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
       - name: Vérifier le format (terraform fmt)
@@ -41,3 +56,68 @@ jobs:
 
       - name: Valider la configuration
         run: terraform validate -no-color
+
+  plan:
+    name: Plan (pull request)
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Initialiser (état dans Azure)
+        run: terraform init -input=false
+
+      - name: Plan
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock-timeout=5m | tee plan.txt
+          {
+            echo "## terraform plan"
+            echo '```'
+            cat plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: Apply (main)
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # Jamais deux apply en même temps (le verrou de l'état protège aussi d'un apply local).
+    concurrency:
+      group: terraform-apply
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Initialiser (état dans Azure)
+        run: terraform init -input=false
+
+      - name: Plan
+        run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+
+      - name: Apply
+        run: terraform apply -input=false -no-color -lock-timeout=5m tfplan
