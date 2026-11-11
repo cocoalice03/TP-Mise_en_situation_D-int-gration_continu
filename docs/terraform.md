@@ -155,3 +155,5 @@ Le CD ne déploie plus sur l'ancienne VM, mais son cron continue de tourner. Sur
 - Pas de base managée ni de sauvegarde automatique : un instantané du disque de données peut être pris à la main dans Azure.
 - Pas d'exécution de `apply` par GitHub Actions, faute de droits sur le compte de l'école ; seule la vérification du code est automatisée.
 - État local : une seule personne de l'équipe applique les changements d'infrastructure.
+
+Les pistes pour dépasser ces limites (OIDC, état distant, sauvegardes, services managés…) sont détaillées dans la section « Limites et perspectives » du [README](../README.md#limites-et-perspectives).

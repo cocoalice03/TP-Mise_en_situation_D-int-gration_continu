@@ -185,6 +185,33 @@ Si quelque chose ne va pas : `docker compose logs --tail=50 mysql minio` pour le
 
 Pour arrêter aussi MySQL et MinIO sans perdre de données : `docker compose stop` (reprise avec `docker compose start`). Pour ne plus payer la VM, l'éteindre depuis votre poste : `az vm deallocate -g rg-transactions-dk -n vm-transactions-dk`.
 
+## Limites et perspectives
+
+Les choix actuels sont adaptés à un projet d'école (un seul serveur, un crédit étudiant, des droits Azure limités). Voici leurs limites et la manière de les dépasser.
+
+### Infrastructure et déploiement
+
+| Limite actuelle | Pourquoi aujourd'hui | Perspective | Effort |
+|---|---|---|---|
+| `terraform apply` lancé depuis un poste, pas par GitHub Actions | Le compte Azure de l'école ne permet pas de créer une identité d'application | Fédération OIDC entre GitHub et Azure (aucun secret stocké) : `plan` automatique sur chaque pull request, `apply` à la fusion sur `main` avec approbation d'un environnement GitHub. Le code Terraform est déjà prêt, seule l'authentification change | Moyen, avec un droit accordé par l'école |
+| État Terraform en fichier local | Une seule personne applique ; un état distant demande un stockage créé au préalable | Backend `azurerm` : compte de stockage dédié, verrouillage automatique, historique des versions, partage dans l'équipe | Faible |
+| Aucune sauvegarde de MySQL ni de MinIO | Base en conteneur sur un disque de la VM | Court terme : `mysqldump` planifié vers MinIO ou vers un stockage Azure, et instantanés du disque de données. Long terme : Azure Database for MySQL (sauvegardes automatiques, restauration à un instant donné), au prix d'une connexion TLS à ajouter dans `get_connection()` | Faible à moyen |
+| Un seul serveur, pas de haute disponibilité | Coût | Exécuter la pipeline en tâche planifiée gérée (Azure Container Apps Jobs, qui remplacent le cron) et utiliser des services managés pour la base et le stockage : plus de VM à maintenir | Élevé |
+| Image MinIO non officielle et figée | MinIO ne publie plus d'images (§4.6) | Construire notre propre image depuis les sources, ou passer à un service compatible S3 maintenu. Le code d'accès est isolé dans `src/storage/` et se change sans toucher au reste | Moyen |
+| Port SSH ouvert à tous, MySQL et MinIO sans TLS | Les adresses des runners GitHub changent à chaque exécution | Runner GitHub auto-hébergé dans le réseau Azure, ou Azure Bastion, pour fermer le port 22 ; TLS sur MySQL et MinIO | Moyen |
+| Mots de passe en clair dans le `.env` de la VM | Simplicité : ils viennent des secrets GitHub | Azure Key Vault lu au démarrage par la VM grâce à son identité managée : plus aucun secret sur le disque | Moyen |
+
+### Exploitation et application
+
+| Limite actuelle | Pourquoi aujourd'hui | Perspective | Effort |
+|---|---|---|---|
+| Les données grossissent sans limite (3 fichiers toutes les 5 minutes) | Démonstration du traitement en continu | Règle de cycle de vie MinIO (suppression des fichiers traités après N jours), purge ou partitionnement de la table `transactions`, fréquence du cron en variable | Faible |
+| La pause du cron est annulée par chaque déploiement | Le CD réinstalle la ligne cron | Variable GitHub `CRON_ENABLED` lue par le CD | Faible |
+| Pas de supervision ni d'alerte | Hors périmètre du sujet | Agent Azure Monitor sur la VM, alertes sur la mémoire, le disque et l'échec du cron ; métriques de la pipeline (lignes insérées et rejetées) | Moyen |
+| Lignes rejetées visibles seulement dans `pipeline.log` | Choix d'un rapport en console | Table `rejected_rows` (fichier, ligne, colonne, raison) pour les analyser et les corriger | Faible |
+| Image Docker lourde (outils de test inclus, `pandas` non utilisé) | Un seul `requirements.txt`, plus simple à gérer | Fichier de dépendances d'exécution séparé, construction de l'image en plusieurs étapes : téléchargement et déploiement plus rapides | Faible |
+| Infrastructure non testée automatiquement au-delà de `validate` | Pas d'identifiants Azure dans la CI | Analyse statique sans identifiants (`tflint`, `checkov`) dès maintenant ; `terraform plan` en CI une fois l'OIDC en place | Faible |
+
 ## Documentation
 
 | Document | Contenu |
