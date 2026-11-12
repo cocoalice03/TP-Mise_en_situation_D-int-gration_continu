@@ -59,6 +59,7 @@ jobs:
 
   plan:
     name: Plan
+    if: github.event_name == 'pull_request'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
@@ -91,7 +92,7 @@ jobs:
 
   apply:
     name: Apply (main)
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
