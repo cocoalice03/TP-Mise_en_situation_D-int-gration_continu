@@ -58,7 +58,7 @@ jobs:
         run: terraform validate -no-color
 
   plan:
-    name: Plan
+    name: Plan (pull request)
     if: github.event_name == 'pull_request'
     needs: validate
     runs-on: ubuntu-latest
