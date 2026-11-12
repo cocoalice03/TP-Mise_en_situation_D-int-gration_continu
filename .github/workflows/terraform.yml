@@ -58,8 +58,7 @@ jobs:
         run: terraform validate -no-color
 
   plan:
-    name: Plan (pull request)
-    if: github.event_name == 'pull_request'
+    name: Plan
     needs: validate
     runs-on: ubuntu-latest
     permissions:
@@ -92,7 +91,7 @@ jobs:
 
   apply:
     name: Apply (main)
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
